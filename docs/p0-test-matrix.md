@@ -46,6 +46,29 @@ Estados permitidos: **Não testado**, **Passou**, **Parcial**, **Falhou**, **Blo
 
 **Passos para colagem P0.1 revisada:** execute `pnpm dev`, clique em **Ativar colagem de diagnóstico** e confirme que o foco vai para a textarea. Cole uma URL obtida por “Copy Media Link” de um `.gif` e depois de um `.webp`. Resultado esperado: `clipboard`, `paste (document → textarea)`, `text/plain`, 0 arquivos, sem mostrar o valor. Se a mensagem continuar “Captura armada”, o evento não foi disparado; se mostrar falha sem MIME e sem arquivos, o evento foi disparado sem dados utilizáveis.
 
+### Registro P0.2 — importação e prévia temporária
+
+| Cenário | Observação | Resultado | Limitação/fallback |
+|---|---|---|---|
+| Validação unitária de normalização, assinatura e seleção | 23 testes automatizados verificam URL HTTPS, `text/plain`, extração segura de atributos HTML, query/fragmento, assinaturas GIF/WebP/PNG, estados de animação, seleção entre miniatura e URL, estados técnicos e liberação de object URL. | Passou | Não equivale a interoperabilidade no WebView2 ou com apps externos. |
+| URL colada não carregava na prévia | A URL HTTPS era recebida, normalizada e selecionada; a CSP continha `img-src 'self' asset: data:` e bloqueava a imagem remota. | Passou após a correção, conforme evidência manual informada abaixo | `https:` foi adicionado somente a `img-src`; não generaliza o resultado para todas as origens remotas. |
+| Prévia de arquivo/URL no Windows | A implementação usa assinatura local e `<img>` nativo; URL remota não é baixada por proxy. | Não testado | Requer verificação real de GIF/WebP animados, arquivo PNG, URL expirada e CORS. |
+
+### Evidência manual informada — P0.2
+
+Os resultados abaixo foram informados após validação manual. O ambiente, as versões dos aplicativos e a versão do Windows não foram registrados; portanto, eles comprovam os fluxos exercitados, mas não compatibilidade universal nem cobertura específica de Windows 10/11.
+
+| Cenário | Resultado informado | Limitação/fallback |
+|---|---|---|
+| Discord — arrastar mídia | Passou: importação e prévia funcionaram. | Não comprova todos os tipos de mensagem, favoritos ou versões do Discord. |
+| URL HTTPS de GIF animado — colagem explícita | Passou: a prévia remota carregou e preservou a animação. | Depende da disponibilidade da origem e de aceitar requisição sem referer. |
+| URL HTTPS de WebP animado — colagem explícita | Passou: a prévia remota carregou e preservou a animação. | Não prova suporte a todos os WebPs nem a URLs sem extensão reconhecível. |
+| Substituição e limpeza de prévias | Passou. | Continua sem persistência entre sessões. |
+| URL inválida | Passou: entrada inválida recebeu tratamento de erro. | Não representa todos os modos de expiração, bloqueio de hotlink ou CORS. |
+| Busca, atalho global e Ctrl+V | Passou sem regressões observadas. | Atalho e comportamento visual ainda não foram registrados separadamente em Windows 10 22H2 e Windows 11. |
+
+**Passos para importação P0.2:** execute `pnpm dev`, arraste para a zona HTML5 um GIF, WebP ou PNG local de até 25 MB e confirme a prévia, a origem local, o formato confirmado e a limpeza. Depois, arme a colagem e cole uma URL HTTPS `.gif` e uma `.webp`, incluindo uma variante com query string e fragmento; confirme que a origem aparece como remota e que o formato/animação são inferidos, sem que a URL integral seja exibida. Confirme a reprodução quando a origem permitir requisição sem referer. Repita com URL expirada ou bloqueada para confirmar o estado de erro. Teste separadamente navegador e Discord; registre apenas o mecanismo, formato, resultado e evidência sanitizada.
+
 ## Compartilhamento: GIFTray → destino
 
 | Destino | Copiar URL | Copiar mídia/arquivo | Animação preservada? | Resultado |
