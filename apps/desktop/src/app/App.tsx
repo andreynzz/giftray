@@ -10,7 +10,7 @@ import {
   makeStyles,
 } from "@fluentui/react-components";
 import { Dismiss20Regular } from "@fluentui/react-icons";
-import { GifSearch } from "../features/gif-search/GifSearch";
+import { GifSearch } from "../features/gif-search";
 import { InputDiagnostics } from "../features/input-diagnostics/InputDiagnostics";
 import {
   readPreferences,
