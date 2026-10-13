@@ -68,6 +68,21 @@ describe("media input normalization", () => {
     expect(normalized.rejectedCount).toBe(3);
   });
 
+  it("accepts GIF and WebP URLs with query strings, fragments and encoded characters", () => {
+    const normalized = normalizeReceivedInput({
+      origin: "paste",
+      files: [],
+      plainText: "https://cdn.example.test/reaction%20one.gif?token=private#preview",
+      uriList: "https://cdn.example.test/animated.webp?width=320#frame",
+    });
+
+    expect(normalized.candidates).toHaveLength(2);
+    expect(normalized.candidates.map((candidate) => candidate.kind === "url" && candidate.url)).toEqual([
+      "https://cdn.example.test/animated.webp?width=320#frame",
+      "https://cdn.example.test/reaction%20one.gif?token=private#preview",
+    ]);
+  });
+
   it("extracts only URL-like HTML attributes and never renders HTML", () => {
     expect(
       extractHtmlUrls(

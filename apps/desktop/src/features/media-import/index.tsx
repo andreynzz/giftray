@@ -7,8 +7,8 @@ import type { MediaPreviewState } from "./hooks/useMediaImport";
 
 interface MediaImportProps {
   onClear: () => void;
-  onLoad: () => void;
-  onLoadError: () => void;
+  onLoad: (src: string) => void;
+  onLoadError: (src: string) => void;
   preview: MediaPreviewState;
 }
 

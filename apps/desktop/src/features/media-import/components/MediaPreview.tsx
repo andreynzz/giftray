@@ -41,8 +41,8 @@ const useStyles = makeStyles({
 
 interface MediaPreviewProps {
   onClear: () => void;
-  onLoad: () => void;
-  onLoadError: () => void;
+  onLoad: (src: string) => void;
+  onLoadError: (src: string) => void;
   preview: MediaPreviewState;
 }
 
@@ -83,8 +83,9 @@ export function MediaPreview({
               className={styles.image}
               src={preview.src}
               alt="Prévia da mídia importada"
-              onLoad={onLoad}
-              onError={onLoadError}
+              referrerPolicy="no-referrer"
+              onLoad={() => onLoad(preview.src)}
+              onError={() => onLoadError(preview.src)}
             />
             {preview.status === "loading" && (
               <Spinner size="tiny" label="Carregando mídia" />

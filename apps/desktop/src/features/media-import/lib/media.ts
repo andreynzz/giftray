@@ -270,6 +270,15 @@ export async function prepareMediaInput(input: ReceivedInput): Promise<{
   selected?: InspectedMedia;
 }> {
   const normalized = normalizeReceivedInput(input);
+  return prepareNormalizedMediaInput(normalized);
+}
+
+export async function prepareNormalizedMediaInput(
+  normalized: NormalizedMediaInput,
+): Promise<{
+  error?: string;
+  selected?: InspectedMedia;
+}> {
   const results = await Promise.all(
     normalized.candidates.map((candidate) =>
       candidate.kind === "file"
