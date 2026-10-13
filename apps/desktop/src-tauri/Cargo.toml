@@ -1,0 +1,19 @@
+[package]
+name = "giftray"
+version = "0.0.0"
+description = "GIFTray desktop P0 spike"
+authors = ["GIFTray contributors"]
+edition = "2021"
+license = "MPL-2.0"
+
+[lib]
+name = "giftray_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-global-shortcut = "2"
+serde = { version = "1", features = ["derive"] }

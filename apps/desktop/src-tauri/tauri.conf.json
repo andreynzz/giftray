@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GIFTray",
+  "version": "0.0.0",
+  "identifier": "org.giftray.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm --dir .. dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm --dir .. build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "GIFTray",
+        "width": 640,
+        "height": 550,
+        "minWidth": 420,
+        "minHeight": 420,
+        "resizable": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": { "active": true, "targets": "all" }
+}
