@@ -18,6 +18,10 @@ describe("input diagnostics", () => {
     ).toEqual(["URL", "HTML", "arquivo", "imagem"]);
   });
 
+  it("does not infer an image from plain text", () => {
+    expect(detectInputTypes(["text/plain"])).toEqual([]);
+  });
+
   it("records HTML5 metadata without content", () => {
     const file = new File(["gif"], "reaction.gif", { type: "image/gif" });
     expect(
