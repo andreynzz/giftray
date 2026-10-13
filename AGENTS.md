@@ -25,6 +25,16 @@ Este arquivo é operacional. Para compreender o produto, leia os documentos escr
 - Conventional Commits por responsabilidade. Não faça push, merge, tag, release ou deploy sem autorização explícita.
 - Preserve histórico e não altere branches não relacionadas.
 
+### Feature file naming
+
+- Organize features by responsibility.
+- Use `index.tsx` as the entry component of a feature when appropriate.
+- Keep the exported component name explicit and descriptive.
+- Import features through their directory entry point.
+- Use descriptive filenames for internal components, hooks, utilities, and tests.
+- Do not create redundant barrel files or nested indexes without a concrete benefit.
+- Prefer consistency within the project over unnecessary renaming.
+
 ## Qualidade e entregáveis
 
 - Registre testes automatizados executados e testes manuais ainda pendentes separadamente.

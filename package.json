@@ -3,5 +3,12 @@
   "private": true,
   "version": "0.0.0",
   "description": "Workspace público do aplicativo desktop GIFTray",
-  "license": "MPL-2.0"
+  "license": "MPL-2.0",
+  "scripts": {
+    "dev": "pnpm --filter @giftray/desktop tauri dev",
+    "build": "pnpm --filter @giftray/desktop build",
+    "check": "pnpm --filter @giftray/desktop check",
+    "test": "pnpm --filter @giftray/desktop test"
+  },
+  "packageManager": "pnpm@11.9.0"
 }

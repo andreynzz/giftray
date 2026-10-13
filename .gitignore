@@ -3,6 +3,9 @@ node_modules/
 dist/
 coverage/
 *.log
+.pnpm-store/
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
 
 # Rust / Tauri (Cargo.lock deve ser versionado)
 target/

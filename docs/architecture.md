@@ -37,6 +37,48 @@ GIFTray Platform/            # Outro repositório, privado; não existe aqui
 
 O workspace está preparado mesmo com apenas uma aplicação. Não vamos criar `packages/core` por antecipação; lógica compartilhada deve surgir de reutilização comprovada. Não haverá `apps/web` no repositório público.
 
+## Arquitetura interna do desktop (P0.1.3)
+
+O primeiro spike começou com um único componente React. A P0.1.3 separa as responsabilidades que já têm comportamento próprio, sem criar estado global, wrappers de Fluent ou pacotes compartilhados especulativos.
+
+```text
+apps/desktop/src/
+├── app/                         # composição, provider de tema e foco da janela
+│   ├── App.tsx
+│   ├── theme.ts
+│   └── use-search-window-focus.ts
+├── features/
+│   ├── gif-search/              # busca local de exemplos e navegação por teclado
+│   ├── input-diagnostics/       # drag/drop, colagem explícita e classificação segura
+│   └── settings/                # preferências locais e diálogo de configurações
+├── platform/tauri/              # contratos TypeScript com APIs Tauri
+│   ├── input.ts
+│   └── window.ts
+├── main.tsx                     # bootstrap React
+└── styles.css                   # regras globais mínimas e acessibilidade
+
+apps/desktop/src-tauri/src/
+├── lib.rs                       # montagem da aplicação e registro dos comandos
+├── shortcuts.rs                 # estado e troca atômica do atalho global
+└── window.rs                    # mostrar, focar e ocultar a janela
+```
+
+### Direção das dependências
+
+`app` compõe features e escolhe o tema. Cada feature contém seu estado, UI e regras específicas. Em `input-diagnostics`, os componentes apresentam a zona de drop, a área de colagem e o resultado; o hook coordena estado e ciclos de vida DOM/Tauri; `diagnostics.ts` preserva a classificação pura e testável. Uma feature pode chamar `platform/tauri` quando precisa de uma API nativa, mas `platform` não importa features nem regras de UI. A lógica classificável do diagnóstico e a persistência de preferências permanecem dentro de suas respectivas features, junto de seus testes. Ainda não há item reutilizado por duas features que justifique `shared/`; a pasta será criada somente diante dessa necessidade concreta.
+
+No Rust, `lib.rs` apenas registra plugins, estado e comandos. `shortcuts.rs` preserva a regra de registrar o novo atalho antes de revogar o antigo. `window.rs` é o único local que manipula a janela principal e emite seu evento de foco. A interface React usa adaptadores tipados em `platform/tauri`, em vez de chamar `invoke` ou APIs de WebView diretamente.
+
+### Como adicionar uma feature
+
+1. Criar `features/<nome>/` somente para uma capacidade de produto com UI ou estado próprios.
+2. Manter regras testáveis e seus testes junto da feature.
+3. Expor uma integração Windows/Tauri nova por `platform/tauri` e manter o payload mínimo e tipado.
+4. Compor a feature em `app/App.tsx`; não usar estado global se a comunicação puder ficar no pai imediato.
+5. Criar um módulo Rust adicional somente quando um comando, estado ou ciclo de vida nativo passar a ter responsabilidade própria.
+
+Essa organização preserva a P0 como experimento local: ela não cria biblioteca definitiva, armazenamento, sincronização ou contrato com a plataforma futura.
+
 ## Fluxo de dados da experiência central
 
 ```text
