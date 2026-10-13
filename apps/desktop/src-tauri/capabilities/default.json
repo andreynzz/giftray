@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Permissões mínimas da janela principal do GIFTray.",
   "windows": ["main"],
-  "permissions": ["core:default", "global-shortcut:default"]
+  "permissions": ["core:default", "global-shortcut:default", "clipboard-manager:allow-write-text"]
 }
