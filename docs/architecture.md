@@ -134,6 +134,16 @@ Não confundiremos uma miniatura visível com prova de que o original animado es
 
 Somente importação explícita. Não monitorar permanentemente a área de transferência nem enviar conteúdo privado para telemetria. Tratar HTML/URL/arquivos como entradas não confiáveis. Permitir protocolos e tipos esperados, limitar downloads, sanitizar logs e aplicar permissões Tauri mínimas. Nunca criar serviço que faça proxy indiscriminado de URLs arbitrárias fornecidas pelo usuário.
 
+### Clipboard de saída (P0.3)
+
+A feature `clipboard-output` não interpreta a miniatura como um arquivo. Para uma URL HTTPS selecionada, o frontend usa o Clipboard Manager do Tauri para escrever o texto original, sem reserializar, normalizar ou registrar URLs assinadas. URLs locais, `blob:` e itens sem URL remota não habilitam esta ação.
+
+Para um arquivo que já foi importado e teve GIF, WebP ou PNG confirmado por assinatura, o frontend envia os bytes e o nome ao comando Rust `copy_media_file`. O comando valida novamente extensão, assinatura e o teto de 25 MB, grava os bytes sem conversão no cache local privado e publica seu caminho no clipboard do Windows como `CF_HDROP`. O receptor recebe portanto um arquivo, não um bitmap; se ele aceitar GIF/WebP animado, a preservação depende dele.
+
+As chamadas Win32 estão encapsuladas em `src-tauri/src/clipboard.rs`. A região `unsafe` cria um `HGLOBAL` movível com `DROPFILES`, usa `OpenClipboard`, `EmptyClipboard`, `SetClipboardData(CF_HDROP)` e `CloseClipboard`, e transfere a propriedade do handle somente após `SetClipboardData` funcionar. Falhas libertam o handle. Caminhos e URLs não entram em logs.
+
+O cache `clipboard-output` retém arquivos por 24 horas e tem teto de 100 MB; a limpeza ocorre ao iniciar e antes de criar um novo arquivo, removendo primeiro itens expirados e depois os mais antigos. Isso evita apagar um arquivo que o aplicativo receptor ainda esteja consumindo logo após a colagem. Arquivos remotos ainda não são baixados nesta P0.3: implementar esse fluxo exige validação resistente a SSRF/redirecionamentos/DNS rebinding que não cabe neste experimento.
+
 ## Futuro contrato desktop–plataforma
 
 Quando houver sincronização, o desktop usará uma API versionada e autenticada. Podem ser compartilhadas **especificações públicas de contrato**, não necessariamente código-fonte. Os dados sincronizados serão principalmente metadados; arquivos guardados somente em um PC terão indicação clara de indisponibilidade na web. A estratégia exata de conflitos e autenticação será definida na P2.

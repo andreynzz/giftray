@@ -13,6 +13,7 @@ import { Dismiss20Regular } from "@fluentui/react-icons";
 import { GifSearch } from "../features/gif-search";
 import { MediaImport, useMediaImport } from "../features/media-import";
 import { InputDiagnostics } from "../features/input-diagnostics/InputDiagnostics";
+import { ClipboardOutput } from "../features/clipboard-output";
 import {
   readPreferences,
   writePreferences,
@@ -95,6 +96,7 @@ export function App() {
           onLoad={mediaImport.markLoaded}
           onLoadError={mediaImport.markFailed}
         />
+        <ClipboardOutput preview={mediaImport.preview} />
       </main>
     </FluentProvider>
   );
