@@ -24,11 +24,11 @@ function memoryStorage(): Storage {
 }
 
 describe("preferences", () => {
-  it("usa valores seguros quando a preferência não existe", () => {
+  it("uses safe defaults when no preference exists", () => {
     expect(readPreferences(memoryStorage())).toEqual(defaultPreferences);
   });
 
-  it("persiste atalho e tema", () => {
+  it("persists shortcut and theme", () => {
     const storage = memoryStorage();
     writePreferences({ shortcut: "Ctrl+Shift+G", theme: "dark" }, storage);
     expect(readPreferences(storage)).toEqual({

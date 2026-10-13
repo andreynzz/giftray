@@ -55,10 +55,18 @@ export function describePasteInput(
   types: Iterable<string>,
   files: Iterable<File> = [],
 ): InputDiagnostic {
-  const diagnostic = describeHtmlInput("clipboard", "paste (document → textarea)", types, files);
+  const diagnostic = describeHtmlInput(
+    "clipboard",
+    "paste (document → textarea)",
+    types,
+    files,
+  );
   return {
     ...diagnostic,
-    status: diagnostic.mimeTypes.length || diagnostic.fileCount ? "detected" : "failed",
+    status:
+      diagnostic.mimeTypes.length || diagnostic.fileCount
+        ? "detected"
+        : "failed",
   };
 }
 
@@ -72,7 +80,6 @@ export function describeNativeFileDrop(
   return {
     mechanism: "Tauri nativo",
     eventName,
-    // A API nativa entrega caminhos, não MIME ou conteúdo. Não os exibimos.
     mimeTypes: [],
     fileCount: paths.length,
     kinds: paths.length ? (isImage ? ["arquivo", "imagem"] : ["arquivo"]) : [],

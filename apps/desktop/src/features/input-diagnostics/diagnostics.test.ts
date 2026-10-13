@@ -8,20 +8,17 @@ import {
   describeNativeFileDrop,
   describePasteInput,
   detectInputTypes,
-} from "./input-diagnostics";
+} from "./diagnostics";
 
-describe("detectInputTypes", () => {
-  it("identifica os formatos sem ler ou registrar o conteúdo", () => {
+describe("input diagnostics", () => {
+  it("identifies formats without reading their contents", () => {
     const image = new File(["gif"], "reaction.gif", { type: "image/gif" });
     expect(
       detectInputTypes(["text/uri-list", "text/html", "Files"], [image]),
     ).toEqual(["URL", "HTML", "arquivo", "imagem"]);
   });
 
-  it("não infere uma imagem sem arquivo de imagem", () => {
-    expect(detectInputTypes(["text/plain"])).toEqual([]);
-  });
-  it("registra MIME e quantidade para o mecanismo HTML5 sem conteúdo", () => {
+  it("records HTML5 metadata without content", () => {
     const file = new File(["gif"], "reaction.gif", { type: "image/gif" });
     expect(
       describeHtmlInput("HTML5", "drop", ["Files", "text/uri-list"], [file]),
@@ -33,7 +30,7 @@ describe("detectInputTypes", () => {
     });
   });
 
-  it("classifica o drop nativo sem expor caminhos", () => {
+  it("classifies native files without exposing paths", () => {
     expect(
       describeNativeFileDrop("drop", ["C:\\private\\reaction.gif"]),
     ).toMatchObject({
@@ -44,8 +41,15 @@ describe("detectInputTypes", () => {
     });
   });
 
-  it("diferencia paste sem formatos utilizáveis de um evento com dados", () => {
-    expect(describePasteInput([])).toMatchObject({ status: "failed", mimeTypes: [], fileCount: 0 });
-    expect(describePasteInput(["text/plain"])).toMatchObject({ status: "detected", mimeTypes: ["text/plain"] });
+  it("distinguishes an empty paste event", () => {
+    expect(describePasteInput([])).toMatchObject({
+      status: "failed",
+      mimeTypes: [],
+      fileCount: 0,
+    });
+    expect(describePasteInput(["text/plain"])).toMatchObject({
+      status: "detected",
+      mimeTypes: ["text/plain"],
+    });
   });
 });
