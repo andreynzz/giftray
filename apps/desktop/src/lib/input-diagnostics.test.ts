@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   describeHtmlInput,
   describeNativeFileDrop,
+  describePasteInput,
   detectInputTypes,
 } from "./input-diagnostics";
 
@@ -41,5 +42,10 @@ describe("detectInputTypes", () => {
       mimeTypes: [],
       kinds: ["arquivo", "imagem"],
     });
+  });
+
+  it("diferencia paste sem formatos utilizáveis de um evento com dados", () => {
+    expect(describePasteInput([])).toMatchObject({ status: "failed", mimeTypes: [], fileCount: 0 });
+    expect(describePasteInput(["text/plain"])).toMatchObject({ status: "detected", mimeTypes: ["text/plain"] });
   });
 });

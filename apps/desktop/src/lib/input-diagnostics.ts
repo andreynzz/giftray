@@ -51,6 +51,17 @@ export function describeHtmlInput(
   };
 }
 
+export function describePasteInput(
+  types: Iterable<string>,
+  files: Iterable<File> = [],
+): InputDiagnostic {
+  const diagnostic = describeHtmlInput("clipboard", "paste (document → textarea)", types, files);
+  return {
+    ...diagnostic,
+    status: diagnostic.mimeTypes.length || diagnostic.fileCount ? "detected" : "failed",
+  };
+}
+
 export function describeNativeFileDrop(
   eventName: string,
   paths: string[],

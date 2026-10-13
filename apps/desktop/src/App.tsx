@@ -22,6 +22,7 @@ import {
   Radio,
   RadioGroup,
   Text,
+  Textarea,
   makeStyles,
   shorthands,
   teamsDarkTheme,
@@ -31,6 +32,7 @@ import { Dismiss20Regular, Settings20Regular } from "@fluentui/react-icons";
 import {
   describeHtmlInput,
   describeNativeFileDrop,
+  describePasteInput,
   failedInputDiagnostic,
   type InputDiagnostic,
 } from "./lib/input-diagnostics";
@@ -91,10 +93,6 @@ function resolveTheme(preference: ThemePreference, systemDark: boolean) {
     : teamsLightTheme;
 }
 
-function isEditableElement(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && (target.isContentEditable || target.matches("input, textarea, select"));
-}
-
 export function App() {
   const styles = useStyles();
   const [preferences, setPreferences] = useState<Preferences>(() =>
@@ -109,8 +107,10 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shortcutDraft, setShortcutDraft] = useState(preferences.shortcut);
   const [shortcutError, setShortcutError] = useState("");
+  const [pasteArmed, setPasteArmed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
+  const pasteTargetRef = useRef<HTMLTextAreaElement>(null);
   const pasteArmedRef = useRef(false);
   const initialShortcutRef = useRef(preferences.shortcut);
   const filtered = useMemo(
@@ -156,13 +156,15 @@ export function App() {
 
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
-      if (!pasteArmedRef.current || isEditableElement(event.target)) return;
+      if (!pasteArmedRef.current || event.target !== pasteTargetRef.current) return;
       pasteArmedRef.current = false;
+      setPasteArmed(false);
+      event.preventDefault();
       if (!event.clipboardData) {
         setDiagnostic(failedInputDiagnostic("clipboard", "paste (document)"));
         return;
       }
-      setDiagnostic(describeHtmlInput("clipboard", "paste (document)", event.clipboardData.types, event.clipboardData.files));
+      setDiagnostic(describePasteInput(event.clipboardData.types, event.clipboardData.files));
     };
     document.addEventListener("paste", onPaste, true);
     return () => document.removeEventListener("paste", onPaste, true);
@@ -194,7 +196,8 @@ export function App() {
   const close = () => invoke("hide_main_window").catch(() => window.close());
   const armPaste = () => {
     pasteArmedRef.current = true;
-    dropZoneRef.current?.focus();
+    setPasteArmed(true);
+    pasteTargetRef.current?.focus();
   };
 
   const saveShortcut = async () => {
@@ -322,6 +325,21 @@ export function App() {
           <Button appearance="secondary" size="small" style={{ marginTop: 8 }} onClick={armPaste}>
             Ativar colagem de diagnóstico
           </Button>
+          <Textarea
+            ref={pasteTargetRef}
+            aria-label="Destino explícito para colagem de diagnóstico"
+            placeholder="Após ativar, pressione Ctrl+V aqui. O conteúdo não será exibido."
+            resize="vertical"
+            rows={2}
+            style={{ marginTop: 8, width: "100%" }}
+            onInput={(event) => {
+              event.currentTarget.value = "";
+            }}
+            onKeyDown={(event) => {
+              if (!(event.ctrlKey && event.key.toLowerCase() === "v")) event.preventDefault();
+            }}
+          />
+          {pasteArmed && <Text className={styles.helper} size={200}>Captura armada: cole na área dedicada.</Text>}
           <Text className={styles.helper} size={200}>
             Tipos detectados:
           </Text>
