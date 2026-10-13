@@ -103,6 +103,7 @@ export function App() {
   const [shortcutDraft, setShortcutDraft] = useState(preferences.shortcut);
   const [shortcutError, setShortcutError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const initialShortcutRef = useRef(preferences.shortcut);
   const filtered = useMemo(
     () =>
       samples.filter((item) =>
@@ -135,7 +136,7 @@ export function App() {
   useEffect(() => {
     // A preferência só é aplicada ao iniciar o app; a falha não altera o
     // valor salvo e o atalho padrão nativo continua disponível.
-    invoke("update_global_shortcut", { shortcut: preferences.shortcut }).catch(() => undefined);
+    invoke("update_global_shortcut", { shortcut: initialShortcutRef.current }).catch(() => undefined);
   }, []);
 
   const updatePreferences = (next: Preferences) => {

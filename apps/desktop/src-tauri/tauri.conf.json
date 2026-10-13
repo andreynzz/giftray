@@ -4,9 +4,9 @@
   "version": "0.0.0",
   "identifier": "org.giftray.desktop",
   "build": {
-    "beforeDevCommand": "pnpm --dir .. dev",
+    "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm --dir .. build",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
   "app": {
