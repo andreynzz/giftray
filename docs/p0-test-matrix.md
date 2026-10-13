@@ -50,10 +50,11 @@ Estados permitidos: **Não testado**, **Passou**, **Parcial**, **Falhou**, **Blo
 
 | Cenário | Observação | Resultado | Limitação/fallback |
 |---|---|---|---|
-| Validação unitária de normalização, assinatura e seleção | 19 testes automatizados verificam URL HTTPS, extração segura de atributos HTML, assinaturas GIF/WebP/PNG, estados de animação, seleção entre miniatura e URL e liberação de object URL. | Passou | Não equivale a interoperabilidade no WebView2 ou com apps externos. |
+| Validação unitária de normalização, assinatura e seleção | 23 testes automatizados verificam URL HTTPS, `text/plain`, extração segura de atributos HTML, query/fragmento, assinaturas GIF/WebP/PNG, estados de animação, seleção entre miniatura e URL, estados técnicos e liberação de object URL. | Passou | Não equivale a interoperabilidade no WebView2 ou com apps externos. |
+| URL colada não carregava na prévia | A URL HTTPS era recebida, normalizada e selecionada; a CSP continha `img-src 'self' asset: data:` e bloqueava a imagem remota. | Corrigido em código; validação manual pendente | `https:` foi adicionado somente a `img-src`; requer confirmação em WebView2 com GIF/WebP reais e origem que aceite `no-referrer`. |
 | Prévia de arquivo/URL no Windows | A implementação usa assinatura local e `<img>` nativo; URL remota não é baixada por proxy. | Não testado | Requer verificação real de GIF/WebP animados, arquivo PNG, URL expirada e CORS. |
 
-**Passos para importação P0.2:** execute `pnpm dev`, arraste para a zona HTML5 um GIF, WebP ou PNG local de até 25 MB e confirme a prévia, a origem local, o formato confirmado e a limpeza. Depois, arme a colagem e cole uma URL HTTPS `.gif` ou `.webp`; confirme que a origem aparece como remota e que o formato/animação são inferidos, sem que a URL integral seja exibida. Repita com uma URL expirada ou bloqueada para confirmar o estado de erro. Teste separadamente navegador e Discord; registre apenas o mecanismo, formato, resultado e evidência sanitizada.
+**Passos para importação P0.2:** execute `pnpm dev`, arraste para a zona HTML5 um GIF, WebP ou PNG local de até 25 MB e confirme a prévia, a origem local, o formato confirmado e a limpeza. Depois, arme a colagem e cole uma URL HTTPS `.gif` e uma `.webp`, incluindo uma variante com query string e fragmento; confirme que a origem aparece como remota e que o formato/animação são inferidos, sem que a URL integral seja exibida. Confirme a reprodução quando a origem permitir requisição sem referer. Repita com URL expirada ou bloqueada para confirmar o estado de erro. Teste separadamente navegador e Discord; registre apenas o mecanismo, formato, resultado e evidência sanitizada.
 
 ## Compartilhamento: GIFTray → destino
 

@@ -75,7 +75,7 @@ A P0.2 não grava arquivo, URL ou HTML. Em um `drop` ou em uma colagem explicita
 
 Arquivos são limitados a 25 MB e precisam ter assinatura GIF, WebP ou PNG. GIF/WebP/PNG identificados por bytes são formatos confirmados; extensão da URL apenas infere formato. A animação é confirmada para WebP com indicador de animação e PNG com `acTL`, inferida para GIF com múltiplos descritores e URLs GIF/WebP, ou desconhecida nos demais casos. A seleção prefere animação confirmada, depois URL provavelmente animada, depois arquivo provavelmente animado e, por fim, mídia estática. Esse critério evita aceitar automaticamente uma miniatura estática quando há uma referência provável ao original.
 
-Para arquivo local, a prévia usa object URL que é revogada ao limpar, substituir ou desmontar o componente. URL remota não é baixada por backend nem por proxy: a WebView tenta carregá-la diretamente e informa erro genérico se a origem expirar, bloquear CORS ou falhar.
+Para arquivo local, a prévia usa object URL que é revogada ao limpar, substituir ou desmontar o componente. URL remota não é baixada por backend nem por proxy: a WebView tenta carregá-la diretamente com `<img referrerpolicy="no-referrer">` e informa erro genérico se a origem expirar, bloquear CORS ou falhar. A CSP permite `https:` somente em `img-src`; scripts, estilos, conexões IPC e comandos nativos permanecem restritos às diretivas existentes.
 
 No Rust, `lib.rs` apenas registra plugins, estado e comandos. `shortcuts.rs` preserva a regra de registrar o novo atalho antes de revogar o antigo. `window.rs` é o único local que manipula a janela principal e emite seu evento de foco. A interface React usa adaptadores tipados em `platform/tauri`, em vez de chamar `invoke` ou APIs de WebView diretamente.
 
