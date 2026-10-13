@@ -33,7 +33,17 @@ Para acompanhar os critérios e as limitações, consulte a [visão do produto](
 
 ## Desenvolvimento e contribuições
 
-Este repositório público abriga o **aplicativo desktop e, caso surja necessidade real, pacotes compartilhados do próprio desktop**. Ele usa um workspace `pnpm` e será desenvolvido com Tauri 2, React e TypeScript. As instruções para executar o aplicativo serão adicionadas quando o primeiro protótipo existir. Para fluxo de contribuição, consulte [CONTRIBUTING.md](CONTRIBUTING.md).
+Este repositório público abriga o **aplicativo desktop e, caso surja necessidade real, pacotes compartilhados do próprio desktop**. Ele usa um workspace `pnpm`, Tauri 2, React e TypeScript.
+
+### Executar o protótipo P0 no Windows
+
+1. Instale o [Rust para o alvo MSVC](https://www.rust-lang.org/tools/install), Node.js LTS, pnpm e o [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/). O WebView2 Runtime também é necessário no Windows 10 quando ele não vier instalado.
+2. Na raiz do repositório, execute `pnpm install` e depois `pnpm dev`.
+3. Use `Ctrl+Alt+G` para alternar a janela e `Esc` para ocultá-la. O atalho pode ser alterado no botão de configurações.
+
+Para verificá-lo sem abrir a janela, execute `pnpm check`, `pnpm test` e `pnpm build`. Os cenários que ainda precisam de uma máquina Windows real estão em [docs/p0-test-matrix.md](docs/p0-test-matrix.md).
+
+Para fluxo de contribuição, consulte [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Licença
 
