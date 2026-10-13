@@ -20,7 +20,8 @@
         "minHeight": 420,
         "resizable": true,
         "alwaysOnTop": true,
-        "skipTaskbar": true
+        "skipTaskbar": true,
+        "dragDropEnabled": false
       }
     ],
     "security": {

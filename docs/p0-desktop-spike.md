@@ -12,7 +12,9 @@ O tema Sistema acompanha `prefers-color-scheme`; Claro e Escuro são opções ex
 
 ## Diagnóstico de entrada
 
-A área experimental reage somente a arrastar/soltar ou `Ctrl+V` com foco nela. Ela mostra categorias de formato (`URL`, `HTML`, `arquivo`, `imagem`) a partir dos MIME types e metadados de `DataTransfer`; não mostra, registra, persiste ou envia o conteúdo importado. Este desenho existe para coletar evidências manuais sem expor URLs assinadas ou dados de clipboard.
+A área experimental possui dois perfis de drag-and-drop que não devem ser tratados como simultâneos no Windows. O perfil normal configura `dragDropEnabled: false` e mede eventos HTML5 (`dragenter`, `dragover`, `drop`) e `DataTransfer`, incluindo MIME, URL, HTML e arquivos. O perfil `pnpm --filter @giftray/desktop tauri:dev:native-dnd` configura `dragDropEnabled: true` e mede `onDragDropEvent` do Tauri; ele oferece arquivos/caminhos e posições, não MIME, URL ou HTML. Caminhos completos nunca são exibidos.
+
+A colagem é armada somente pelo botão explícito da área de diagnóstico. Um listener de `document` em captura observa o próximo `paste`, sem impedir seu comportamento normal; campos editáveis (inclusive a busca) são ignorados. A interface mostra mecanismo, nome do evento, MIME disponível, contagem de arquivos e falha, mas não mostra, registra, persiste ou envia conteúdo importado. Este desenho existe para coletar evidências manuais sem expor URLs assinadas ou dados de clipboard.
 
 ## Limitações conhecidas e próximos testes manuais
 

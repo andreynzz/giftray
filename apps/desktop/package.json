@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "tauri": "tauri",
+    "tauri:dev:native-dnd": "tauri dev --config src-tauri/tauri.native-dnd.conf.json",
     "build": "tsc -b && vite build",
     "check": "eslint . && tsc -b --pretty false",
     "test": "vitest run",

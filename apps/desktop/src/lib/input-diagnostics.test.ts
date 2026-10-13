@@ -3,7 +3,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, it } from "vitest";
-import { detectInputTypes } from "./input-diagnostics";
+import {
+  describeHtmlInput,
+  describeNativeFileDrop,
+  detectInputTypes,
+} from "./input-diagnostics";
 
 describe("detectInputTypes", () => {
   it("identifica os formatos sem ler ou registrar o conteúdo", () => {
@@ -15,5 +19,27 @@ describe("detectInputTypes", () => {
 
   it("não infere uma imagem sem arquivo de imagem", () => {
     expect(detectInputTypes(["text/plain"])).toEqual([]);
+  });
+  it("registra MIME e quantidade para o mecanismo HTML5 sem conteúdo", () => {
+    const file = new File(["gif"], "reaction.gif", { type: "image/gif" });
+    expect(
+      describeHtmlInput("HTML5", "drop", ["Files", "text/uri-list"], [file]),
+    ).toMatchObject({
+      mechanism: "HTML5",
+      fileCount: 1,
+      mimeTypes: ["files", "text/uri-list"],
+      kinds: ["URL", "arquivo", "imagem"],
+    });
+  });
+
+  it("classifica o drop nativo sem expor caminhos", () => {
+    expect(
+      describeNativeFileDrop("drop", ["C:\\private\\reaction.gif"]),
+    ).toMatchObject({
+      mechanism: "Tauri nativo",
+      fileCount: 1,
+      mimeTypes: [],
+      kinds: ["arquivo", "imagem"],
+    });
   });
 });

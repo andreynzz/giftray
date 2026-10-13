@@ -32,6 +32,18 @@ Estados permitidos: **Não testado**, **Passou**, **Parcial**, **Falhou**, **Blo
 | Área de transferência — URL | Colar explicitamente | — | — | — | Não testado |
 | Área de transferência — mídia/arquivo | Colar explicitamente | — | — | — | Não testado |
 
+### Registro P0.1 — mecanismo de diagnóstico
+
+| Cenário | Observação | Resultado | Limitação/fallback |
+|---|---|---|---|
+| Implementação anterior, janela Tauri padrão | `dragDropEnabled` não era declarado; no Windows o padrão nativo do Tauri captura drops de arquivo antes dos handlers HTML5. Como o app só possuía handlers React, nenhum mecanismo nativo era observado. | Falhou | Corrigido com dois perfis mutuamente exclusivos: HTML5 padrão (`false`) e nativo experimental (`true`). Ainda requer teste por origem no Windows. |
+| Implementação anterior, `Ctrl+V` | O listener existia somente na área de drop, mas a busca recebe foco ao abrir. Logo, a colagem não chegava ao handler. | Falhou | Corrigido por listener `document` em captura, armado apenas pelo botão explícito e ignorando campos editáveis. |
+| Perfil HTML5, `dragDropEnabled: false` | Deve fornecer `dragenter`, `dragover`, `drop`, `DataTransfer.types`, arquivos e MIME para URL/HTML/arquivo/imagem. | Não testado | Não recebe os eventos nativos de caminho do Tauri na mesma WebView. |
+| Perfil Tauri, `dragDropEnabled: true` | Deve fornecer `onDragDropEvent` com contagem de caminhos de arquivo em `enter`/`drop`. | Não testado | Não fornece MIME, URL ou HTML; caminhos completos não são exibidos. |
+| Colagem armada na área de diagnóstico | O app mostra evento `paste (document)`, tipos MIME e quantidade de arquivos, sem ler conteúdo. | Não testado | A colagem em busca e outros campos editáveis segue o comportamento normal e não entra no diagnóstico. |
+
+**Passos para os perfis de drag-and-drop:** executar `pnpm dev` para HTML5 e `pnpm --filter @giftray/desktop tauri:dev:native-dnd` para o perfil nativo. Em cada um, testar arrastar URL, página HTML e arquivo/imagem; registrar somente os tipos mostrados, a contagem e o resultado, nunca conteúdo, caminhos completos ou URLs assinadas.
+
 ## Compartilhamento: GIFTray → destino
 
 | Destino | Copiar URL | Copiar mídia/arquivo | Animação preservada? | Resultado |

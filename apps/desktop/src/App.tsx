@@ -5,6 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   Badge,
   Button,
@@ -28,8 +29,10 @@ import {
 } from "@fluentui/react-components";
 import { Dismiss20Regular, Settings20Regular } from "@fluentui/react-icons";
 import {
-  detectInputTypes,
-  type DetectedInputKind,
+  describeHtmlInput,
+  describeNativeFileDrop,
+  failedInputDiagnostic,
+  type InputDiagnostic,
 } from "./lib/input-diagnostics";
 import {
   readPreferences,
@@ -88,6 +91,10 @@ function resolveTheme(preference: ThemePreference, systemDark: boolean) {
     : teamsLightTheme;
 }
 
+function isEditableElement(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement && (target.isContentEditable || target.matches("input, textarea, select"));
+}
+
 export function App() {
   const styles = useStyles();
   const [preferences, setPreferences] = useState<Preferences>(() =>
@@ -98,11 +105,13 @@ export function App() {
   );
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
-  const [diagnostics, setDiagnostics] = useState<DetectedInputKind[]>([]);
+  const [diagnostic, setDiagnostic] = useState<InputDiagnostic | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [shortcutDraft, setShortcutDraft] = useState(preferences.shortcut);
   const [shortcutError, setShortcutError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const dropZoneRef = useRef<HTMLDivElement>(null);
+  const pasteArmedRef = useRef(false);
   const initialShortcutRef = useRef(preferences.shortcut);
   const filtered = useMemo(
     () =>
@@ -119,6 +128,44 @@ export function App() {
     const update = () => setSystemDark(media.matches);
     media.addEventListener("change", update);
     return () => media.removeEventListener("change", update);
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    getCurrentWebview()
+      .onDragDropEvent(({ payload }) => {
+        if (payload.type === "enter" || payload.type === "drop") {
+          setDiagnostic(describeNativeFileDrop(payload.type, payload.paths));
+          return;
+        }
+        setDiagnostic({
+          mechanism: "Tauri nativo",
+          eventName: payload.type,
+          mimeTypes: [],
+          fileCount: 0,
+          kinds: [],
+          status: "detected",
+        });
+      })
+      .then((dispose) => {
+        unlisten = dispose;
+      })
+      .catch(() => setDiagnostic(failedInputDiagnostic("Tauri nativo", "registro do listener")));
+    return () => unlisten?.();
+  }, []);
+
+  useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      if (!pasteArmedRef.current || isEditableElement(event.target)) return;
+      pasteArmedRef.current = false;
+      if (!event.clipboardData) {
+        setDiagnostic(failedInputDiagnostic("clipboard", "paste (document)"));
+        return;
+      }
+      setDiagnostic(describeHtmlInput("clipboard", "paste (document)", event.clipboardData.types, event.clipboardData.files));
+    };
+    document.addEventListener("paste", onPaste, true);
+    return () => document.removeEventListener("paste", onPaste, true);
   }, []);
 
   useEffect(() => {
@@ -145,8 +192,10 @@ export function App() {
   };
 
   const close = () => invoke("hide_main_window").catch(() => window.close());
-  const inspect = (types: Iterable<string>, files?: Iterable<File>) =>
-    setDiagnostics(detectInputTypes(types, files));
+  const armPaste = () => {
+    pasteArmedRef.current = true;
+    dropZoneRef.current?.focus();
+  };
 
   const saveShortcut = async () => {
     setShortcutError("");
@@ -247,15 +296,21 @@ export function App() {
             Diagnóstico de importação
           </Text>
           <div
+            ref={dropZoneRef}
             className={styles.dropZone}
-            onDragOver={(event) => event.preventDefault()}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              setDiagnostic(describeHtmlInput("HTML5", "dragenter", event.dataTransfer.types, event.dataTransfer.files));
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDiagnostic(describeHtmlInput("HTML5", "dragover", event.dataTransfer.types, event.dataTransfer.files));
+            }}
+            onDragLeave={() => setDiagnostic(describeHtmlInput("HTML5", "dragleave", []))}
             onDrop={(event) => {
               event.preventDefault();
-              inspect(event.dataTransfer.types, event.dataTransfer.files);
+              setDiagnostic(describeHtmlInput("HTML5", "drop", event.dataTransfer.types, event.dataTransfer.files));
             }}
-            onPaste={(event) =>
-              inspect(event.clipboardData.types, event.clipboardData.files)
-            }
             tabIndex={0}
             aria-label="Arraste conteúdo aqui ou cole com Control V"
           >
@@ -264,16 +319,33 @@ export function App() {
               <br />O conteúdo não é salvo nem exibido neste experimento.
             </Text>
           </div>
+          <Button appearance="secondary" size="small" style={{ marginTop: 8 }} onClick={armPaste}>
+            Ativar colagem de diagnóstico
+          </Button>
           <Text className={styles.helper} size={200}>
             Tipos detectados:
           </Text>
           <div className={styles.badges}>
-            {diagnostics.length ? (
-              diagnostics.map((kind) => (
-                <Badge key={kind} appearance="filled">
-                  {kind}
+            {diagnostic ? (
+              <>
+                <Badge appearance={diagnostic.status === "detected" ? "filled" : "outline"}>
+                  {diagnostic.mechanism}
                 </Badge>
-              ))
+                <Badge appearance="outline">{diagnostic.status}: {diagnostic.eventName}</Badge>
+                <Badge appearance="outline">{diagnostic.fileCount} arquivo(s)</Badge>
+                {diagnostic.mimeTypes.map((type) => (
+                  <Badge key={type} appearance="outline">{type}</Badge>
+                ))}
+                {diagnostic.kinds.map((kind) => (
+                  <Badge key={kind} appearance="filled">{kind}</Badge>
+                ))}
+                {!diagnostic.mimeTypes.length && diagnostic.mechanism === "Tauri nativo" && (
+                  <Text size={200}>A API nativa fornece arquivos, não MIME.</Text>
+                )}
+                {diagnostic.status === "failed" && (
+                  <Text size={200}>A operação falhou; tente novamente com a estratégia indicada.</Text>
+                )}
+              </>
             ) : (
               <Text size={200}>aguardando uma ação explícita</Text>
             )}
