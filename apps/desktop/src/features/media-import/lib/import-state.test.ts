@@ -21,7 +21,12 @@ describe("import technical state", () => {
       rejectedCount: 0,
     });
 
-    expect(received).toMatchObject({ input: "received", url: "accepted", selection: "pending" });
+    expect(received).toMatchObject({
+      input: "received",
+      urlReceived: true,
+      url: "accepted",
+      selection: "pending",
+    });
     expect(loadedImportTechnicalState(selectedImportTechnicalState(received))).toMatchObject({
       selection: "selected",
       preview: "loaded",
@@ -30,6 +35,7 @@ describe("import technical state", () => {
 
   it("distinguishes rejected URL input, selection failure and preview failure", () => {
     const received = receivedImportTechnicalState({ candidates: [], rejectedCount: 1 });
+    expect(received.urlReceived).toBe(true);
     expect(received.url).toBe("rejected");
     expect(failedSelectionTechnicalState(received).selection).toBe("failed");
     expect(failedPreviewTechnicalState(initialImportTechnicalState).preview).toBe("failed");

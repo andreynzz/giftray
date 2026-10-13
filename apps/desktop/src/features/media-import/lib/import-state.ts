@@ -8,11 +8,13 @@ export interface ImportTechnicalState {
   input: "idle" | "received";
   preview: "idle" | "loading" | "loaded" | "failed";
   selection: "idle" | "pending" | "selected" | "failed";
+  urlReceived: boolean;
   url: "not-applicable" | "received" | "accepted" | "rejected";
 }
 
 export const initialImportTechnicalState: ImportTechnicalState = {
   input: "idle",
+  urlReceived: false,
   url: "not-applicable",
   selection: "idle",
   preview: "idle",
@@ -23,9 +25,11 @@ export function receivedImportTechnicalState(
 ): ImportTechnicalState {
   const hasUrl = normalized.candidates.some((candidate) => candidate.kind === "url");
   const rejectedUrl = !hasUrl && normalized.rejectedCount > 0;
+  const urlReceived = hasUrl || rejectedUrl;
 
   return {
     input: "received",
+    urlReceived,
     url: hasUrl ? "accepted" : rejectedUrl ? "rejected" : "not-applicable",
     selection: "pending",
     preview: "idle",
