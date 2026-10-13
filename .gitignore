@@ -1,0 +1,19 @@
+# JavaScript / TypeScript (lockfile pnpm deve ser versionado)
+node_modules/
+dist/
+coverage/
+*.log
+
+# Rust / Tauri (Cargo.lock deve ser versionado)
+target/
+
+# Credenciais e ambiente
+.env
+.env.*
+!.env.example
+
+# Sistema / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

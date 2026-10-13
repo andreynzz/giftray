@@ -1,0 +1,7 @@
+{
+  "name": "giftray-workspace",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Workspace público do aplicativo desktop GIFTray",
+  "license": "MPL-2.0"
+}
