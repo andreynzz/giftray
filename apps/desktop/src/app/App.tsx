@@ -11,6 +11,7 @@ import {
 } from "@fluentui/react-components";
 import { Dismiss20Regular } from "@fluentui/react-icons";
 import { GifSearch } from "../features/gif-search";
+import { MediaImport, useMediaImport } from "../features/media-import";
 import { InputDiagnostics } from "../features/input-diagnostics/InputDiagnostics";
 import {
   readPreferences,
@@ -45,6 +46,7 @@ export function App() {
   const inputRef = useRef<HTMLInputElement>(null);
   const initialShortcutRef = useRef(preferences.shortcut);
   const systemDark = useSystemDarkMode();
+  const mediaImport = useMediaImport();
   useSearchWindowFocus(inputRef);
 
   useEffect(() => {
@@ -86,7 +88,13 @@ export function App() {
           </div>
         </header>
         <GifSearch inputRef={inputRef} />
-        <InputDiagnostics />
+        <InputDiagnostics onInput={mediaImport.receiveInput} />
+        <MediaImport
+          preview={mediaImport.preview}
+          onClear={mediaImport.clear}
+          onLoad={mediaImport.markLoaded}
+          onLoadError={mediaImport.markFailed}
+        />
       </main>
     </FluentProvider>
   );

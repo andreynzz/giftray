@@ -7,6 +7,7 @@ import { DiagnosticDropZone } from "./components/DiagnosticDropZone";
 import { DiagnosticPasteArea } from "./components/DiagnosticPasteArea";
 import { DiagnosticResult } from "./components/DiagnosticResult";
 import { useInputDiagnostics } from "./hooks/useInputDiagnostics";
+import type { ReceivedInput } from "../../shared/received-input";
 
 const useStyles = makeStyles({
   diagnostics: {
@@ -16,7 +17,11 @@ const useStyles = makeStyles({
   },
 });
 
-export function InputDiagnostics() {
+interface InputDiagnosticsProps {
+  onInput?: (input: ReceivedInput) => void;
+}
+
+export function InputDiagnostics({ onInput }: InputDiagnosticsProps) {
   const styles = useStyles();
   const {
     diagnostic,
@@ -24,7 +29,7 @@ export function InputDiagnostics() {
     pasteTargetRef,
     armPaste,
     dropZoneHandlers,
-  } = useInputDiagnostics();
+  } = useInputDiagnostics(onInput);
 
   return (
     <section className={styles.diagnostics} aria-labelledby="diagnostics-title">

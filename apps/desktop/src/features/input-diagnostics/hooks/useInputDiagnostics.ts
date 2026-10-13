@@ -5,6 +5,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { DragEventHandler } from "react";
 import {
+  readReceivedInput,
+  type ReceivedInput,
+} from "../../../shared/received-input";
+import {
   listenForNativeDragDrop,
   type NativeDragDropPayload,
 } from "../../../platform/tauri/input";
@@ -48,11 +52,16 @@ export function registerAsyncNativeListener(
   };
 }
 
-export function useInputDiagnostics() {
+export function useInputDiagnostics(onInput?: (input: ReceivedInput) => void) {
   const [diagnostic, setDiagnostic] = useState<InputDiagnostic | null>(null);
   const [pasteArmed, setPasteArmed] = useState(false);
   const pasteTargetRef = useRef<HTMLTextAreaElement>(null);
   const pasteArmedRef = useRef(false);
+  const onInputRef = useRef(onInput);
+
+  useEffect(() => {
+    onInputRef.current = onInput;
+  }, [onInput]);
 
   useEffect(() => {
     return registerAsyncNativeListener(
@@ -93,6 +102,9 @@ export function useInputDiagnostics() {
           ? describePasteInput(event.clipboardData.types, event.clipboardData.files)
           : failedInputDiagnostic("clipboard", "paste (document)"),
       );
+      if (event.clipboardData) {
+        onInputRef.current?.(readReceivedInput("paste", event.clipboardData));
+      }
     };
 
     document.addEventListener("paste", onPaste, true);
@@ -135,6 +147,7 @@ export function useInputDiagnostics() {
         event.dataTransfer.files,
       ),
     );
+    onInputRef.current?.(readReceivedInput("drop", event.dataTransfer));
   };
 
   return {
