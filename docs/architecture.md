@@ -65,7 +65,7 @@ apps/desktop/src-tauri/src/
 
 ### Direção das dependências
 
-`app` compõe features e escolhe o tema. Cada feature contém seu estado, UI e regras específicas. Uma feature pode chamar `platform/tauri` quando precisa de uma API nativa, mas `platform` não importa features nem regras de UI. A lógica classificável do diagnóstico e a persistência de preferências permanecem dentro de suas respectivas features, junto de seus testes. Ainda não há item reutilizado por duas features que justifique `shared/`; a pasta será criada somente diante dessa necessidade concreta.
+`app` compõe features e escolhe o tema. Cada feature contém seu estado, UI e regras específicas. Em `input-diagnostics`, os componentes apresentam a zona de drop, a área de colagem e o resultado; o hook coordena estado e ciclos de vida DOM/Tauri; `diagnostics.ts` preserva a classificação pura e testável. Uma feature pode chamar `platform/tauri` quando precisa de uma API nativa, mas `platform` não importa features nem regras de UI. A lógica classificável do diagnóstico e a persistência de preferências permanecem dentro de suas respectivas features, junto de seus testes. Ainda não há item reutilizado por duas features que justifique `shared/`; a pasta será criada somente diante dessa necessidade concreta.
 
 No Rust, `lib.rs` apenas registra plugins, estado e comandos. `shortcuts.rs` preserva a regra de registrar o novo atalho antes de revogar o antigo. `window.rs` é o único local que manipula a janela principal e emite seu evento de foco. A interface React usa adaptadores tipados em `platform/tauri`, em vez de chamar `invoke` ou APIs de WebView diretamente.
 
