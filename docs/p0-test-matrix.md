@@ -79,6 +79,17 @@ Os resultados abaixo foram informados após validação manual. O ambiente, as v
 | Telegram Desktop/Web | — | — | — | Não testado |
 | Explorador de Arquivos (colar arquivo) | Não aplicável | — | — | Não testado |
 
+### Registro P0.3 — clipboard de saída
+
+| Cenário | Observação automatizada | Resultado | Limitação/fallback |
+|---|---|---|---|
+| Seleção da ação | Testes de unidade habilitam **Copiar link** somente para a URL HTTPS remota original e **Copiar arquivo** somente para arquivo local importado. | Passou | Não prova escrita real no clipboard. |
+| Validação do arquivo | O comando nativo limita a 25 MB e confirma assinatura/extensão GIF, WebP ou PNG antes de armazenar os bytes. | Pendente de execução manual nativa | A validação de assinatura do frontend já tem cobertura P0.2; a ponte Tauri ainda precisa ser exercitada na janela Windows. |
+| Retenção de cache | Política implementada: 24 h, máximo 100 MB, limpeza na inicialização e antes de nova cópia. | Pendente de execução manual nativa | Não remover o arquivo logo após copiar ou fechar a janela. |
+| Download remoto | Deliberadamente não implementado. | Não aplicável | O usuário pode copiar o link HTTPS; não há download sem controles completos de SSRF/redirecionamento/DNS. |
+
+**Passos P0.3 para validação manual:** importe separadamente um GIF animado, WebP animado e PNG local de até 25 MB. Clique em **Copiar arquivo**, cole no Explorador de Arquivos e verifique nome, extensão e bytes; em seguida cole manualmente no Discord Desktop, Discord Web, WhatsApp Web e Telegram Desktop, registrando aceitação, arquivo recebido e animação. Para URL HTTPS, clique em **Copiar link** e cole no Bloco de Notas; confirme que o valor é o original, inclusive query/fragmento, sem registrá-lo nesta matriz. Execute esses testes em Windows 10 22H2 e Windows 11 antes de alterar os estados gerais de compatibilidade.
+
 ## Comportamento do aplicativo
 
 | Cenário | Windows 10 22H2 | Windows 11 |
