@@ -37,7 +37,7 @@ GIFTray Platform/            # Outro repositório, privado; não existe aqui
 
 O workspace está preparado mesmo com apenas uma aplicação. Não vamos criar `packages/core` por antecipação; lógica compartilhada deve surgir de reutilização comprovada. Não haverá `apps/web` no repositório público.
 
-## Arquitetura interna do desktop (P0.1.3)
+## Arquitetura interna do desktop (P0.2)
 
 O primeiro spike começou com um único componente React. A P0.1.3 separa as responsabilidades que já têm comportamento próprio, sem criar estado global, wrappers de Fluent ou pacotes compartilhados especulativos.
 
@@ -50,11 +50,13 @@ apps/desktop/src/
 ├── features/
 │   ├── gif-search/              # busca local de exemplos e navegação por teclado
 │   ├── input-diagnostics/       # drag/drop, colagem explícita e classificação segura
+│   ├── media-import/            # normalização, seleção e prévia temporária de mídia
 │   └── settings/                # preferências locais e diálogo de configurações
 ├── platform/tauri/              # contratos TypeScript com APIs Tauri
 │   ├── input.ts
 │   └── window.ts
 ├── main.tsx                     # bootstrap React
+├── shared/                      # contrato de entrada usado por diagnóstico e importação
 └── styles.css                   # regras globais mínimas e acessibilidade
 
 apps/desktop/src-tauri/src/
@@ -65,7 +67,15 @@ apps/desktop/src-tauri/src/
 
 ### Direção das dependências
 
-`app` compõe features e escolhe o tema. Cada feature contém seu estado, UI e regras específicas. Em `input-diagnostics`, os componentes apresentam a zona de drop, a área de colagem e o resultado; o hook coordena estado e ciclos de vida DOM/Tauri; `diagnostics.ts` preserva a classificação pura e testável. Uma feature pode chamar `platform/tauri` quando precisa de uma API nativa, mas `platform` não importa features nem regras de UI. A lógica classificável do diagnóstico e a persistência de preferências permanecem dentro de suas respectivas features, junto de seus testes. Ainda não há item reutilizado por duas features que justifique `shared/`; a pasta será criada somente diante dessa necessidade concreta.
+`app` compõe features e escolhe o tema. Cada feature contém seu estado, UI e regras específicas. Em `input-diagnostics`, os componentes apresentam a zona de drop, a área de colagem e o resultado; o hook coordena estado e ciclos de vida DOM/Tauri; `diagnostics.ts` preserva a classificação pura e testável. A P0.2 acrescenta `media-import`: `lib/media.ts` normaliza as entradas e identifica assinaturas, o hook controla a prévia e libera object URLs, e os componentes apenas apresentam o resultado. O contrato `shared/received-input.ts` surgiu de reutilização concreta: o diagnóstico é o único capturador de eventos e entrega a entrada explicitamente recebida à importação, evitando listeners concorrentes. Uma feature pode chamar `platform/tauri` quando precisa de uma API nativa, mas `platform` não importa features nem regras de UI.
+
+### Importação temporária de mídia
+
+A P0.2 não grava arquivo, URL ou HTML. Em um `drop` ou em uma colagem explicitamente armada, o contrato compartilhado transporta arquivos e os campos `text/uri-list`, `text/plain` e `text/html` apenas para processamento em memória. O HTML nunca é inserido no DOM; somente valores de atributos `src` e `href` são considerados e passam pela validação de URL HTTPS.
+
+Arquivos são limitados a 25 MB e precisam ter assinatura GIF, WebP ou PNG. GIF/WebP/PNG identificados por bytes são formatos confirmados; extensão da URL apenas infere formato. A animação é confirmada para WebP com indicador de animação e PNG com `acTL`, inferida para GIF com múltiplos descritores e URLs GIF/WebP, ou desconhecida nos demais casos. A seleção prefere animação confirmada, depois URL provavelmente animada, depois arquivo provavelmente animado e, por fim, mídia estática. Esse critério evita aceitar automaticamente uma miniatura estática quando há uma referência provável ao original.
+
+Para arquivo local, a prévia usa object URL que é revogada ao limpar, substituir ou desmontar o componente. URL remota não é baixada por backend nem por proxy: a WebView tenta carregá-la diretamente e informa erro genérico se a origem expirar, bloquear CORS ou falhar.
 
 No Rust, `lib.rs` apenas registra plugins, estado e comandos. `shortcuts.rs` preserva a regra de registrar o novo atalho antes de revogar o antigo. `window.rs` é o único local que manipula a janela principal e emite seu evento de foco. A interface React usa adaptadores tipados em `platform/tauri`, em vez de chamar `invoke` ou APIs de WebView diretamente.
 

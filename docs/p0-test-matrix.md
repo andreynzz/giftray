@@ -46,6 +46,15 @@ Estados permitidos: **Não testado**, **Passou**, **Parcial**, **Falhou**, **Blo
 
 **Passos para colagem P0.1 revisada:** execute `pnpm dev`, clique em **Ativar colagem de diagnóstico** e confirme que o foco vai para a textarea. Cole uma URL obtida por “Copy Media Link” de um `.gif` e depois de um `.webp`. Resultado esperado: `clipboard`, `paste (document → textarea)`, `text/plain`, 0 arquivos, sem mostrar o valor. Se a mensagem continuar “Captura armada”, o evento não foi disparado; se mostrar falha sem MIME e sem arquivos, o evento foi disparado sem dados utilizáveis.
 
+### Registro P0.2 — importação e prévia temporária
+
+| Cenário | Observação | Resultado | Limitação/fallback |
+|---|---|---|---|
+| Validação unitária de normalização, assinatura e seleção | 19 testes automatizados verificam URL HTTPS, extração segura de atributos HTML, assinaturas GIF/WebP/PNG, estados de animação, seleção entre miniatura e URL e liberação de object URL. | Passou | Não equivale a interoperabilidade no WebView2 ou com apps externos. |
+| Prévia de arquivo/URL no Windows | A implementação usa assinatura local e `<img>` nativo; URL remota não é baixada por proxy. | Não testado | Requer verificação real de GIF/WebP animados, arquivo PNG, URL expirada e CORS. |
+
+**Passos para importação P0.2:** execute `pnpm dev`, arraste para a zona HTML5 um GIF, WebP ou PNG local de até 25 MB e confirme a prévia, a origem local, o formato confirmado e a limpeza. Depois, arme a colagem e cole uma URL HTTPS `.gif` ou `.webp`; confirme que a origem aparece como remota e que o formato/animação são inferidos, sem que a URL integral seja exibida. Repita com uma URL expirada ou bloqueada para confirmar o estado de erro. Teste separadamente navegador e Discord; registre apenas o mecanismo, formato, resultado e evidência sanitizada.
+
 ## Compartilhamento: GIFTray → destino
 
 | Destino | Copiar URL | Copiar mídia/arquivo | Animação preservada? | Resultado |
