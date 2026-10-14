@@ -11,6 +11,24 @@ use std::{
 const MAX_BYTES: usize = 25 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 3;
 
+fn next_redirect(current: &Url, location: &str) -> Result<Url, String> {
+    let next = current.join(location).map_err(|_| "Invalid redirect")?;
+    validate_url(&next)?;
+    Ok(next)
+}
+
+fn accepts_content_length(length: Option<u64>) -> bool {
+    length.is_none_or(|value| value <= MAX_BYTES as u64)
+}
+
+fn append_chunk(bytes: &mut Vec<u8>, chunk: &[u8]) -> bool {
+    if bytes.len().saturating_add(chunk.len()) > MAX_BYTES {
+        return false;
+    }
+    bytes.extend_from_slice(chunk);
+    true
+}
+
 fn public_address(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(value) => {
@@ -134,6 +152,18 @@ mod tests {
         assert!(crate::clipboard::media_extension(b"<html>error</html>").is_none());
         assert!(MAX_BYTES.saturating_add(1) > MAX_BYTES);
     }
+
+    #[test]
+    fn validates_redirects_and_effective_byte_limit() {
+        let current = Url::parse("https://cdn.example.test/a.gif").unwrap();
+        assert!(next_redirect(&current, "https://media.example.test/b.gif").is_ok());
+        assert!(next_redirect(&current, "http://media.example.test/b.gif").is_err());
+        assert!(next_redirect(&current, "https://127.0.0.1/b.gif").is_err());
+        assert!(accepts_content_length(None));
+        assert!(!accepts_content_length(Some(MAX_BYTES as u64 + 1)));
+        let mut bytes = vec![0; MAX_BYTES];
+        assert!(!append_chunk(&mut bytes, &[1]));
+    }
 }
 
 pub async fn download(url: &str) -> Result<Vec<u8>, String> {
@@ -151,18 +181,13 @@ pub async fn download(url: &str) -> Result<Vec<u8>, String> {
                 .get(reqwest::header::LOCATION)
                 .and_then(|value| value.to_str().ok())
                 .ok_or("O redirecionamento remoto é inválido.")?;
-            current = current
-                .join(location)
-                .map_err(|_| "O redirecionamento remoto é inválido.")?;
+            current = next_redirect(&current, location)?;
             continue;
         }
         if !response.status().is_success() {
             return Err("A origem remota recusou o download da mídia.".into());
         }
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_BYTES as u64)
-        {
+        if !accepts_content_length(response.content_length()) {
             return Err("A mídia remota excede o limite experimental de 25 MB.".into());
         }
         let mut body = response;
@@ -172,10 +197,9 @@ pub async fn download(url: &str) -> Result<Vec<u8>, String> {
             .await
             .map_err(|_| "O download da mídia foi interrompido.")?
         {
-            if bytes.len().saturating_add(chunk.len()) > MAX_BYTES {
+            if !append_chunk(&mut bytes, &chunk) {
                 return Err("A mídia remota excede o limite experimental de 25 MB.".into());
             }
-            bytes.extend_from_slice(&chunk);
         }
         return Ok(bytes);
     }
