@@ -11,6 +11,88 @@ use std::{
 const MAX_BYTES: usize = 25 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 3;
 
+struct MediaResponse<B> {
+    status: u16,
+    location: Option<String>,
+    content_length: Option<u64>,
+    body: B,
+}
+
+trait MediaBody {
+    async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, String>;
+}
+
+trait MediaTransport {
+    type Body: MediaBody;
+
+    async fn send(&mut self, url: Url) -> Result<MediaResponse<Self::Body>, String>;
+}
+
+struct ReqwestTransport;
+
+struct ReqwestBody {
+    response: reqwest::Response,
+}
+
+impl MediaBody for ReqwestBody {
+    async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, String> {
+        self.response
+            .chunk()
+            .await
+            .map(|chunk| chunk.map(|value| value.to_vec()))
+            .map_err(|_| "O download da mídia foi interrompido.".into())
+    }
+}
+
+impl MediaTransport for ReqwestTransport {
+    type Body = ReqwestBody;
+
+    async fn send(&mut self, url: Url) -> Result<MediaResponse<Self::Body>, String> {
+        let client = client_for(&url).await?;
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|_| "Não foi possível baixar a mídia remota.")?;
+        Ok(MediaResponse {
+            status: response.status().as_u16(),
+            location: response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            content_length: response.content_length(),
+            body: ReqwestBody { response },
+        })
+    }
+}
+
+async fn download_with<T: MediaTransport>(transport: &mut T, url: &str) -> Result<Vec<u8>, String> {
+    let mut current = Url::parse(url).map_err(|_| "A origem remota não é válida.")?;
+    for _ in 0..=MAX_REDIRECTS {
+        validate_url(&current)?;
+        let mut response = transport.send(current.clone()).await?;
+        match process_response_head(
+            &current,
+            response.status,
+            response.location.as_deref(),
+            response.content_length,
+        )? {
+            ResponseAction::Redirect(next) => current = next,
+            ResponseAction::Body => {
+                let mut bytes = Vec::new();
+                while let Some(chunk) = response.body.next_chunk().await? {
+                    if !append_chunk(&mut bytes, &chunk) {
+                        return Err("A mídia remota excede o limite experimental de 25 MB.".into());
+                    }
+                }
+                return Ok(bytes);
+            }
+        }
+    }
+    Err("A origem remota excedeu o limite de redirecionamentos.".into())
+}
+
 enum ResponseAction {
     Redirect(Url),
     Body,
@@ -35,22 +117,6 @@ fn process_response_head(
         return Err("A mídia remota excede o limite experimental de 25 MB.".into());
     }
     Ok(ResponseAction::Body)
-}
-
-#[cfg(test)]
-fn collect_chunks<I>(chunks: I, limit: usize) -> Result<Vec<u8>, String>
-where
-    I: IntoIterator<Item = Result<Vec<u8>, ()>>,
-{
-    let mut bytes = Vec::new();
-    for chunk in chunks {
-        let chunk = chunk.map_err(|_| "O download da mídia foi interrompido.")?;
-        if bytes.len().saturating_add(chunk.len()) > limit {
-            return Err("A mídia remota excede o limite experimental de 25 MB.".into());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(bytes)
 }
 
 fn next_redirect(current: &Url, location: &str) -> Result<Url, String> {
@@ -148,6 +214,36 @@ async fn client_for(url: &Url) -> Result<Client, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+
+    struct FakeBody {
+        chunks: VecDeque<Result<Vec<u8>, String>>,
+    }
+
+    impl MediaBody for FakeBody {
+        async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, String> {
+            match self.chunks.pop_front() {
+                Some(chunk) => chunk.map(Some),
+                None => Ok(None),
+            }
+        }
+    }
+
+    struct FakeTransport {
+        responses: VecDeque<Result<MediaResponse<FakeBody>, String>>,
+        requested: Vec<Url>,
+    }
+
+    impl MediaTransport for FakeTransport {
+        type Body = FakeBody;
+
+        async fn send(&mut self, url: Url) -> Result<MediaResponse<Self::Body>, String> {
+            self.requested.push(url);
+            self.responses
+                .pop_front()
+                .unwrap_or_else(|| Err("O transporte de teste ficou sem respostas.".into()))
+        }
+    }
 
     #[test]
     fn accepts_only_safe_https_urls() {
@@ -221,68 +317,42 @@ mod tests {
             Ok(ResponseAction::Redirect(_))
         ));
         assert!(process_response_head(&url, 302, Some("http://bad.example.test/a"), None).is_err());
+        let mut bytes = Vec::new();
+        assert!(append_chunk(&mut bytes, b"GIF89a-original"));
+        assert_eq!(bytes, b"GIF89a-original");
+    }
+
+    #[test]
+    fn download_with_uses_transport_and_preserves_gif_bytes() {
+        let expected = b"GIF89a-original".to_vec();
+        let response = MediaResponse {
+            status: 200,
+            location: None,
+            content_length: None,
+            body: FakeBody {
+                chunks: VecDeque::from([Ok(expected.clone())]),
+            },
+        };
+        let mut transport = FakeTransport {
+            responses: VecDeque::from([Ok(response)]),
+            requested: Vec::new(),
+        };
+
+        let actual = tauri::async_runtime::block_on(download_with(
+            &mut transport,
+            "https://cdn.example.test/image.gif",
+        ))
+        .unwrap();
+
+        assert_eq!(actual, expected);
+        assert_eq!(transport.requested.len(), 1);
         assert_eq!(
-            collect_chunks(vec![Ok(b"GIF89a-original".to_vec())], 100).unwrap(),
-            b"GIF89a-original"
+            transport.requested[0],
+            Url::parse("https://cdn.example.test/image.gif").unwrap()
         );
-        assert!(collect_chunks(vec![Ok(b"<html>no</html>".to_vec())], 100).is_ok());
-        assert!(collect_chunks(vec![Err(())], 100).is_err());
-        assert!(collect_chunks(vec![Ok(vec![1; 6]), Ok(vec![2; 6])], 10).is_err());
     }
 }
 
 pub async fn download(url: &str) -> Result<Vec<u8>, String> {
-    let mut current = Url::parse(url).map_err(|_| "A origem remota não é válida.")?;
-    for _ in 0..=MAX_REDIRECTS {
-        let client = client_for(&current).await?;
-        let response = client
-            .get(current.clone())
-            .send()
-            .await
-            .map_err(|_| "Não foi possível baixar a mídia remota.")?;
-        let location = response
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|value| value.to_str().ok());
-        match process_response_head(
-            &current,
-            response.status().as_u16(),
-            location,
-            response.content_length(),
-        )? {
-            ResponseAction::Redirect(next) => {
-                current = next;
-                continue;
-            }
-            ResponseAction::Body => {}
-        }
-        /*if response.status().is_redirection() {
-            let location = response
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|value| value.to_str().ok())
-                .ok_or("O redirecionamento remoto é inválido.")?;
-            current = next_redirect(&current, location)?;
-            continue;
-        }
-        if !response.status().is_success() {
-            return Err("A origem remota recusou o download da mídia.".into());
-        }
-        if !accepts_content_length(response.content_length()) {
-            return Err("A mídia remota excede o limite experimental de 25 MB.".into());
-        }*/
-        let mut body = response;
-        let mut received = Vec::new();
-        while let Some(chunk) = body
-            .chunk()
-            .await
-            .map_err(|_| "O download da mídia foi interrompido.")?
-        {
-            if !append_chunk(&mut received, &chunk) {
-                return Err("A mídia remota excede o limite experimental de 25 MB.".into());
-            }
-        }
-        return Ok(received);
-    }
-    Err("A origem remota excedeu o limite de redirecionamentos.".into())
+    download_with(&mut ReqwestTransport, url).await
 }
