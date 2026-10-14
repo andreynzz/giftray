@@ -14,6 +14,7 @@ const MAX_REDIRECTS: usize = 3;
 fn public_address(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(value) => {
+            let octets = value.octets();
             !value.is_private()
                 && !value.is_loopback()
                 && !value.is_link_local()
@@ -21,6 +22,9 @@ fn public_address(ip: IpAddr) -> bool {
                 && !value.is_multicast()
                 && !value.is_broadcast()
                 && !value.is_documentation()
+                && octets[0] != 0
+                && !(octets[0] == 100 && (64..=127).contains(&octets[1]))
+                && !(octets[0] == 198 && (18..=19).contains(&octets[1]))
         }
         IpAddr::V6(value) => {
             !value.is_loopback()
@@ -30,6 +34,17 @@ fn public_address(ip: IpAddr) -> bool {
                 && !value.is_unicast_link_local()
         }
     }
+}
+
+fn validated_addresses(addresses: Vec<SocketAddr>) -> Result<Vec<SocketAddr>, String> {
+    if addresses.is_empty()
+        || addresses
+            .iter()
+            .any(|address| !public_address(address.ip()))
+    {
+        return Err("A origem remota não atende aos requisitos de segurança.".into());
+    }
+    Ok(addresses)
 }
 
 fn validate_url(url: &Url) -> Result<&str, String> {
@@ -53,14 +68,12 @@ fn validate_url(url: &Url) -> Result<&str, String> {
 
 async fn client_for(url: &Url) -> Result<Client, String> {
     let host = validate_url(url)?;
-    let addresses: Vec<SocketAddr> = tokio::net::lookup_host((host, 443))
-        .await
-        .map_err(|_| "Não foi possível resolver a origem remota.")?
-        .filter(|address| public_address(address.ip()))
-        .collect();
-    if addresses.is_empty() {
-        return Err("A origem remota não atende aos requisitos de segurança.".into());
-    }
+    let addresses = validated_addresses(
+        tokio::net::lookup_host((host, 443))
+            .await
+            .map_err(|_| "Não foi possível resolver a origem remota.")?
+            .collect(),
+    )?;
     // resolve_to_addrs binds reqwest to the exact validated addresses, preventing a second DNS resolution/rebinding.
     Client::builder()
         .no_proxy()
@@ -70,6 +83,57 @@ async fn client_for(url: &Url) -> Result<Client, String> {
         .resolve_to_addrs(host, &addresses)
         .build()
         .map_err(|_| "Não foi possível preparar o download seguro.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_safe_https_urls() {
+        assert!(
+            validate_url(&Url::parse("https://cdn.example.test/a.gif?token=x").unwrap()).is_ok()
+        );
+        for value in [
+            "http://example.test/a.gif",
+            "https://127.0.0.1/a.gif",
+            "https://localhost/a.gif",
+            "https://a.local/a.gif",
+            "https://user@example.test/a.gif",
+            "https://example.test:444/a.gif",
+        ] {
+            assert!(
+                validate_url(&Url::parse(value).unwrap()).is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_private_reserved_and_mixed_dns_answers() {
+        let public: SocketAddr = "8.8.8.8:443".parse().unwrap();
+        for value in [
+            "127.0.0.1:443",
+            "10.0.0.1:443",
+            "100.64.0.1:443",
+            "198.18.0.1:443",
+            "[::1]:443",
+            "[fc00::1]:443",
+            "[fe80::1]:443",
+        ] {
+            let address = value.parse().unwrap();
+            assert!(validated_addresses(vec![address]).is_err(), "{value}");
+        }
+        assert!(validated_addresses(vec![public]).is_ok());
+        assert!(validated_addresses(vec![public, "10.0.0.1:443".parse().unwrap()]).is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_media_and_enforces_stream_limit() {
+        assert!(crate::clipboard::media_extension(b"GIF89a data").is_some());
+        assert!(crate::clipboard::media_extension(b"<html>error</html>").is_none());
+        assert!(MAX_BYTES.saturating_add(1) > MAX_BYTES);
+    }
 }
 
 pub async fn download(url: &str) -> Result<Vec<u8>, String> {
