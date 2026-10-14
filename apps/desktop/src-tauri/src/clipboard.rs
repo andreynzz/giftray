@@ -72,7 +72,7 @@ fn cache_file(directory: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf
     Ok(path)
 }
 
-fn prune_cache(directory: &Path, protected: &HashSet<PathBuf>) -> bool {
+fn prune_cache_with_limit(directory: &Path, protected: &HashSet<PathBuf>, limit: u64) -> bool {
     let now = SystemTime::now();
     let mut files: Vec<_> = fs::read_dir(directory)
         .into_iter()
@@ -100,7 +100,7 @@ fn prune_cache(directory: &Path, protected: &HashSet<PathBuf>) -> bool {
     files.sort_by_key(|(_, metadata)| metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH));
     let mut total: u64 = files.iter().map(|(_, metadata)| metadata.len()).sum();
     for (path, metadata) in files {
-        if total <= CACHE_MAX_BYTES {
+        if total <= limit {
             break;
         }
         if protected.contains(&path) {
@@ -110,7 +110,11 @@ fn prune_cache(directory: &Path, protected: &HashSet<PathBuf>) -> bool {
             total = total.saturating_sub(metadata.len());
         }
     }
-    total <= CACHE_MAX_BYTES
+    total <= limit
+}
+
+fn prune_cache(directory: &Path, protected: &HashSet<PathBuf>) -> bool {
+    prune_cache_with_limit(directory, protected, CACHE_MAX_BYTES)
 }
 
 fn is_cache_expired(modified: SystemTime, now: SystemTime) -> bool {
@@ -293,5 +297,24 @@ mod tests {
             now - CACHE_RETENTION - Duration::from_secs(1),
             now
         ));
+    }
+
+    #[test]
+    fn cache_limit_preserves_protected_file_and_rejects_when_only_it_remains() {
+        let directory =
+            std::env::temp_dir().join(format!("giftray-cache-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let protected_path = directory.join("active.gif");
+        let disposable_path = directory.join("old.gif");
+        fs::write(&protected_path, b"1234").unwrap();
+        fs::write(&disposable_path, b"5678").unwrap();
+        let protected = HashSet::from([protected_path.clone()]);
+        assert!(prune_cache_with_limit(&directory, &protected, 4));
+        assert!(protected_path.exists());
+        assert!(!disposable_path.exists());
+        assert!(!prune_cache_with_limit(&directory, &protected, 3));
+        assert!(protected_path.exists());
+        let _ = fs::remove_dir_all(directory);
     }
 }

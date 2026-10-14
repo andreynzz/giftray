@@ -96,6 +96,7 @@ Os resultados abaixo foram informados após validação manual. O ambiente, as v
 | URL expirada ou bloqueada | Aprovado manualmente: a falha foi comunicada sem indicar cópia bem-sucedida. | Passou | Não cobre todos os erros de transporte. |
 | GIF local → Discord | Aprovado manualmente sem regressão. | Passou | Mantém a limitação de compatibilidade já registrada para outros destinos. |
 | Clipboard após fechar GIFTray | Aprovado manualmente: o arquivo permaneceu disponível após fechar o aplicativo. | Passou | Ainda não prova proteção contra limpeza por teto de cache. |
+| Cache sob limite com arquivo CF_HDROP protegido | Teste Rust cria cache controlado com arquivo ativo e descartável: remove o descartável, preserva o ativo e recusa limpeza quando apenas o ativo excede o limite. | Passou (teste determinístico) | A leitura real do CF_HDROP e falhas Win32 continuam dependentes de validação manual Windows. |
 
 **Passos P0.3 para validação manual:** importe separadamente um GIF animado, WebP animado e PNG local de até 25 MB. Clique em **Copiar arquivo**, cole no Explorador de Arquivos e verifique nome, extensão e bytes; em seguida cole manualmente no Discord Desktop, Discord Web, WhatsApp Web e Telegram Desktop, registrando aceitação, arquivo recebido e animação. Para URL HTTPS, clique em **Copiar link** e cole no Bloco de Notas; confirme que o valor é o original, inclusive query/fragmento, sem registrá-lo nesta matriz. Execute esses testes em Windows 10 22H2 e Windows 11 antes de alterar os estados gerais de compatibilidade.
 
