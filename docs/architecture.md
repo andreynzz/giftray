@@ -144,6 +144,8 @@ As chamadas Win32 estão encapsuladas em `src-tauri/src/clipboard.rs`. A região
 
 O cache `clipboard-output` retém arquivos por 24 horas e tem teto de 100 MB; a limpeza ocorre ao iniciar e antes de criar um novo arquivo, removendo primeiro itens expirados e depois os mais antigos. Isso evita apagar um arquivo que o aplicativo receptor ainda esteja consumindo logo após a colagem. Arquivos remotos ainda não são baixados nesta P0.3: implementar esse fluxo exige validação resistente a SSRF/redirecionamentos/DNS rebinding que não cabe neste experimento.
 
+Na P0.4, a cópia de arquivo remoto usa `reqwest` com Rustls, sem proxy e sem redirects automáticos. Cada URL HTTPS sem credenciais, porta não padrão ou IP literal é resolvida explicitamente; qualquer resposta DNS sem endereços públicos é rejeitada, e os endereços validados são vinculados ao cliente HTTP para evitar nova resolução/DNS rebinding. Redirecionamentos são processados um a um (máximo de três) com a mesma política. O corpo é lido em streaming, limitado a 25 MB inclusive quando `Content-Length` falta ou mente, e só vai ao cache/CF_HDROP após a assinatura GIF/WebP/PNG ser confirmada. Servidores que exigem autenticação ou bloqueiam o download continuam incompatíveis.
+
 ## Futuro contrato desktop–plataforma
 
 Quando houver sincronização, o desktop usará uma API versionada e autenticada. Podem ser compartilhadas **especificações públicas de contrato**, não necessariamente código-fonte. Os dados sincronizados serão principalmente metadados; arquivos guardados somente em um PC terão indicação clara de indisponibilidade na web. A estratégia exata de conflitos e autenticação será definida na P2.

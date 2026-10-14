@@ -12,3 +12,7 @@ export function copyText(text: string): Promise<void> {
 export function copyFileToWindowsClipboard(fileName: string, bytes: Uint8Array): Promise<void> {
   return invoke("copy_media_file", { fileName, bytes: Array.from(bytes) });
 }
+
+export function copyRemoteFileToWindowsClipboard(url: string): Promise<void> {
+  return invoke("copy_remote_media_file", { url });
+}

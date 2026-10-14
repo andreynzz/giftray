@@ -30,6 +30,18 @@ fn valid_media(file_name: &str, bytes: &[u8]) -> bool {
     }
 }
 
+pub fn media_extension(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("gif")
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
 fn cache_directory(app: &AppHandle) -> Result<PathBuf, String> {
     let directory = app
         .path()
@@ -191,6 +203,14 @@ pub fn copy_media_file(app: AppHandle, file_name: String, bytes: Vec<u8>) -> Res
         return Err(error);
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn copy_remote_media_file(app: AppHandle, url: String) -> Result<(), String> {
+    let bytes = crate::remote_media::download(&url).await?;
+    let extension = media_extension(&bytes)
+        .ok_or("A resposta remota não é uma mídia GIF, WebP ou PNG válida.")?;
+    copy_media_file(app, format!("remote-media.{extension}"), bytes)
 }
 
 pub fn cleanup_clipboard_cache(app: &AppHandle) {
