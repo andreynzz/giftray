@@ -189,7 +189,7 @@ fn set_hdrop(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn protected_clipboard_paths(directory: &Path) -> HashSet<PathBuf> {
+fn protected_clipboard_paths(directory: &Path) -> Result<HashSet<PathBuf>, String> {
     use windows_sys::Win32::{
         System::{
             DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard},
@@ -199,7 +199,7 @@ fn protected_clipboard_paths(directory: &Path) -> HashSet<PathBuf> {
     };
     let mut paths = HashSet::new();
     if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
-        return paths;
+        return Err("Não foi possível verificar os arquivos protegidos pelo clipboard.".into());
     }
     let handle = unsafe { GetClipboardData(CF_HDROP as u32) };
     if !handle.is_null() {
@@ -222,12 +222,12 @@ fn protected_clipboard_paths(directory: &Path) -> HashSet<PathBuf> {
     unsafe {
         CloseClipboard();
     }
-    paths
+    Ok(paths)
 }
 
 #[cfg(not(windows))]
-fn protected_clipboard_paths(_: &Path) -> HashSet<PathBuf> {
-    HashSet::new()
+fn protected_clipboard_paths(_: &Path) -> Result<HashSet<PathBuf>, String> {
+    Ok(HashSet::new())
 }
 
 #[cfg(not(windows))]
@@ -244,7 +244,7 @@ pub fn copy_media_file(app: AppHandle, file_name: String, bytes: Vec<u8>) -> Res
         return Err("O arquivo não possui um formato GIF, WebP ou PNG confirmado.".into());
     }
     let directory = cache_directory(&app)?;
-    let protected = protected_clipboard_paths(&directory);
+    let protected = protected_clipboard_paths(&directory)?;
     if !prune_cache(&directory, &protected) {
         return Err("Não há espaço seguro disponível no cache temporário.".into());
     }
@@ -266,8 +266,9 @@ pub async fn copy_remote_media_file(app: AppHandle, url: String) -> Result<(), S
 
 pub fn cleanup_clipboard_cache(app: &AppHandle) {
     if let Ok(directory) = cache_directory(app) {
-        let protected = protected_clipboard_paths(&directory);
-        let _ = prune_cache(&directory, &protected);
+        if let Ok(protected) = protected_clipboard_paths(&directory) {
+            let _ = prune_cache(&directory, &protected);
+        }
     }
 }
 
