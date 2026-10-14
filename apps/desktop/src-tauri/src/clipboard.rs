@@ -6,6 +6,7 @@
 //! cache files must outlive the clipboard operation and a receiving process.
 
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
@@ -71,7 +72,7 @@ fn cache_file(directory: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf
     Ok(path)
 }
 
-fn prune_cache(directory: &Path) {
+fn prune_cache(directory: &Path, protected: &HashSet<PathBuf>) -> bool {
     let now = SystemTime::now();
     let mut files: Vec<_> = fs::read_dir(directory)
         .into_iter()
@@ -86,10 +87,11 @@ fn prune_cache(directory: &Path) {
         .filter(|(_, metadata)| metadata.is_file())
         .collect();
     for (path, metadata) in &files {
-        if metadata
-            .modified()
-            .ok()
-            .is_some_and(|modified| is_cache_expired(modified, now))
+        if !protected.contains(path)
+            && metadata
+                .modified()
+                .ok()
+                .is_some_and(|modified| is_cache_expired(modified, now))
         {
             let _ = fs::remove_file(path);
         }
@@ -101,10 +103,14 @@ fn prune_cache(directory: &Path) {
         if total <= CACHE_MAX_BYTES {
             break;
         }
+        if protected.contains(&path) {
+            continue;
+        }
         if fs::remove_file(path).is_ok() {
             total = total.saturating_sub(metadata.len());
         }
     }
+    total <= CACHE_MAX_BYTES
 }
 
 fn is_cache_expired(modified: SystemTime, now: SystemTime) -> bool {
@@ -182,6 +188,48 @@ fn set_hdrop(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(windows)]
+fn protected_clipboard_paths(directory: &Path) -> HashSet<PathBuf> {
+    use windows_sys::Win32::{
+        System::{
+            DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard},
+            Ole::CF_HDROP,
+        },
+        UI::Shell::DragQueryFileW,
+    };
+    let mut paths = HashSet::new();
+    if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
+        return paths;
+    }
+    let handle = unsafe { GetClipboardData(CF_HDROP as u32) };
+    if !handle.is_null() {
+        let count = unsafe { DragQueryFileW(handle, u32::MAX, std::ptr::null_mut(), 0) };
+        for index in 0..count {
+            let length = unsafe { DragQueryFileW(handle, index, std::ptr::null_mut(), 0) };
+            let mut buffer = vec![0u16; length as usize + 1];
+            unsafe {
+                DragQueryFileW(handle, index, buffer.as_mut_ptr(), buffer.len() as u32);
+            }
+            if let Ok(path) =
+                PathBuf::from(String::from_utf16_lossy(&buffer[..length as usize])).canonicalize()
+            {
+                if path.starts_with(directory) {
+                    paths.insert(path);
+                }
+            }
+        }
+    }
+    unsafe {
+        CloseClipboard();
+    }
+    paths
+}
+
+#[cfg(not(windows))]
+fn protected_clipboard_paths(_: &Path) -> HashSet<PathBuf> {
+    HashSet::new()
+}
+
 #[cfg(not(windows))]
 fn set_hdrop(_: &Path) -> Result<(), String> {
     Err("Copiar arquivo requer Windows.".into())
@@ -196,7 +244,10 @@ pub fn copy_media_file(app: AppHandle, file_name: String, bytes: Vec<u8>) -> Res
         return Err("O arquivo não possui um formato GIF, WebP ou PNG confirmado.".into());
     }
     let directory = cache_directory(&app)?;
-    prune_cache(&directory);
+    let protected = protected_clipboard_paths(&directory);
+    if !prune_cache(&directory, &protected) {
+        return Err("Não há espaço seguro disponível no cache temporário.".into());
+    }
     let path = cache_file(&directory, &file_name, &bytes)?;
     if let Err(error) = set_hdrop(&path) {
         let _ = fs::remove_file(path);
@@ -215,7 +266,8 @@ pub async fn copy_remote_media_file(app: AppHandle, url: String) -> Result<(), S
 
 pub fn cleanup_clipboard_cache(app: &AppHandle) {
     if let Ok(directory) = cache_directory(app) {
-        prune_cache(&directory);
+        let protected = protected_clipboard_paths(&directory);
+        let _ = prune_cache(&directory, &protected);
     }
 }
 
