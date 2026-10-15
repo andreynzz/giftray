@@ -1,6 +1,6 @@
 # P0 — Prova técnica do desktop
 
-> **Status:** planejada; nenhuma compatibilidade foi confirmada por testes neste projeto.  
+> **Status:** concluída, condicionada à integração aprovada da P0.4 em `develop`.  
 > **Leitores:** pessoas que implementam, testam ou acompanham a viabilidade do GIFTray.
 
 ## Por que começamos pela P0
@@ -54,3 +54,11 @@ Se o Tauri não atingir requisitos essenciais, o relatório deve dizer se o prob
 ## Registro do desenvolvimento
 
 Após o commit inicial da documentação na `main` e a criação de `develop`, o primeiro incremento será realizado na branch `feature/p0-desktop-spike`, derivada de `develop`. As mudanças devem ser divididas em commits convencionais por responsabilidade, com revisão antes de integrar. Essas convenções são explicadas operacionalmente em [`AGENTS.md`](../AGENTS.md); este documento registra o propósito técnico e o critério de validação.
+
+## Encerramento da P0
+
+**Decisão:** a prova técnica P0 está concluída, condicionada ao merge local aprovado da P0.4.  
+**Etapas:** P0.1 concluída; P0.2 concluída; P0.3 concluída; P0.4 concluída, condicionada ao merge aprovado.  
+**Cenários comprovadamente suportados:** importação e compartilhamento manual registrados na matriz, incluindo GIF/WebP remoto em destinos Discord e GIF remoto no Explorer. Isso não demonstra compatibilidade universal.  
+**Riscos remanescentes:** testes específicos em Windows 10 22H2 e Windows 11, compatibilidade parcial do WhatsApp, falhas nativas reais de clipboard não totalmente simuláveis, disponibilidade/políticas de servidores remotos e smoke test final da retenção do cache.  
+**Próximo incremento autorizado:** P1 — Biblioteca local, sem início automático.
