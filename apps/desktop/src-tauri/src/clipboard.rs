@@ -9,6 +9,7 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    sync::Mutex,
     time::{Duration, SystemTime},
 };
 use tauri::{AppHandle, Manager};
@@ -17,6 +18,7 @@ const MAX_MEDIA_BYTES: usize = 25 * 1024 * 1024;
 const CACHE_MAX_BYTES: u64 = 100 * 1024 * 1024;
 const CACHE_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 const CACHE_DIRECTORY: &str = "clipboard-output";
+static CACHE_LOCK: Mutex<()> = Mutex::new(());
 
 fn valid_media(file_name: &str, bytes: &[u8]) -> bool {
     let extension = Path::new(file_name)
@@ -50,10 +52,26 @@ fn cache_directory(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|_| "Não foi possível localizar o cache local.")?
         .join(CACHE_DIRECTORY);
     fs::create_dir_all(&directory).map_err(|_| "Não foi possível criar o cache local.")?;
-    Ok(directory)
+    directory
+        .canonicalize()
+        .map_err(|_| "Não foi possível acessar o cache local.".into())
 }
 
 fn cache_file(directory: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    cache_file_with(directory, file_name, bytes, |path, contents| {
+        fs::write(path, contents)
+    })
+}
+
+fn cache_file_with<F>(
+    directory: &Path,
+    file_name: &str,
+    bytes: &[u8],
+    write: F,
+) -> Result<PathBuf, String>
+where
+    F: FnOnce(&Path, &[u8]) -> std::io::Result<()>,
+{
     let extension = Path::new(file_name)
         .extension()
         .and_then(|value| value.to_str())
@@ -68,8 +86,28 @@ fn cache_file(directory: &Path, file_name: &str, bytes: &[u8]) -> Result<PathBuf
         extension
     );
     let path = directory.join(unique);
-    fs::write(&path, bytes).map_err(|_| "Não foi possível gravar o arquivo temporário.")?;
+    let temporary = directory.join(format!(
+        ".{path_name}.part",
+        path_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("Formato de arquivo inválido.")?
+    ));
+    if write(&temporary, bytes).is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err("Não foi possível gravar o arquivo temporário.".into());
+    }
+    if fs::rename(&temporary, &path).is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err("Não foi possível finalizar o arquivo temporário.".into());
+    }
     Ok(path)
+}
+
+fn is_incomplete_cache_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(".giftray-") && name.ends_with(".part"))
 }
 
 fn prune_cache_with_limit(directory: &Path, protected: &HashSet<PathBuf>, limit: u64) -> bool {
@@ -87,11 +125,12 @@ fn prune_cache_with_limit(directory: &Path, protected: &HashSet<PathBuf>, limit:
         .filter(|(_, metadata)| metadata.is_file())
         .collect();
     for (path, metadata) in &files {
-        if !protected.contains(path)
-            && metadata
-                .modified()
-                .ok()
-                .is_some_and(|modified| is_cache_expired(modified, now))
+        if is_incomplete_cache_file(path)
+            || (!protected.contains(path)
+                && metadata
+                    .modified()
+                    .ok()
+                    .is_some_and(|modified| is_cache_expired(modified, now)))
         {
             let _ = fs::remove_file(path);
         }
@@ -113,8 +152,30 @@ fn prune_cache_with_limit(directory: &Path, protected: &HashSet<PathBuf>, limit:
     total <= limit
 }
 
-fn prune_cache(directory: &Path, protected: &HashSet<PathBuf>) -> bool {
-    prune_cache_with_limit(directory, protected, CACHE_MAX_BYTES)
+fn reserve_cache_space(directory: &Path, protected: &HashSet<PathBuf>, incoming: usize) -> bool {
+    reserve_cache_space_with_limit(directory, protected, incoming as u64, CACHE_MAX_BYTES)
+}
+
+fn reserve_cache_space_with_limit(
+    directory: &Path,
+    protected: &HashSet<PathBuf>,
+    incoming: u64,
+    limit: u64,
+) -> bool {
+    limit
+        .checked_sub(incoming)
+        .is_some_and(|available| prune_cache_with_limit(directory, protected, available))
+}
+
+fn publish_cached_file<F>(path: &Path, publish: F) -> Result<(), String>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+{
+    if let Err(error) = publish(path) {
+        let _ = fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(())
 }
 
 fn is_cache_expired(modified: SystemTime, now: SystemTime) -> bool {
@@ -248,16 +309,15 @@ pub fn copy_media_file(app: AppHandle, file_name: String, bytes: Vec<u8>) -> Res
         return Err("O arquivo não possui um formato GIF, WebP ou PNG confirmado.".into());
     }
     let directory = cache_directory(&app)?;
+    let _lock = CACHE_LOCK
+        .lock()
+        .map_err(|_| "Não foi possível acessar o cache temporário com segurança.")?;
     let protected = protected_clipboard_paths(&directory)?;
-    if !prune_cache(&directory, &protected) {
+    if !reserve_cache_space(&directory, &protected, bytes.len()) {
         return Err("Não há espaço seguro disponível no cache temporário.".into());
     }
     let path = cache_file(&directory, &file_name, &bytes)?;
-    if let Err(error) = set_hdrop(&path) {
-        let _ = fs::remove_file(path);
-        return Err(error);
-    }
-    Ok(())
+    publish_cached_file(&path, set_hdrop)
 }
 
 #[tauri::command]
@@ -270,15 +330,43 @@ pub async fn copy_remote_media_file(app: AppHandle, url: String) -> Result<(), S
 
 pub fn cleanup_clipboard_cache(app: &AppHandle) {
     if let Ok(directory) = cache_directory(app) {
-        if let Ok(protected) = protected_clipboard_paths(&directory) {
-            let _ = prune_cache(&directory, &protected);
-        }
+        let Ok(_lock) = CACHE_LOCK.lock() else {
+            return;
+        };
+        cleanup_cache_directory(&directory, protected_clipboard_paths(&directory));
+    }
+}
+
+fn cleanup_cache_directory(directory: &Path, protected: Result<HashSet<PathBuf>, String>) {
+    cleanup_cache_directory_with_limit(directory, protected, CACHE_MAX_BYTES);
+}
+
+fn cleanup_cache_directory_with_limit(
+    directory: &Path,
+    protected: Result<HashSet<PathBuf>, String>,
+    limit: u64,
+) {
+    if let Ok(protected) = protected {
+        let _ = prune_cache_with_limit(directory, &protected, limit);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_cache_directory(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "giftray-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        directory
+    }
 
     #[test]
     fn accepts_only_supported_extensions_with_matching_signatures() {
@@ -301,10 +389,7 @@ mod tests {
 
     #[test]
     fn cache_limit_preserves_protected_file_and_rejects_when_only_it_remains() {
-        let directory =
-            std::env::temp_dir().join(format!("giftray-cache-test-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&directory);
-        fs::create_dir_all(&directory).unwrap();
+        let directory = test_cache_directory("cache-limit");
         let protected_path = directory.join("active.gif");
         let disposable_path = directory.join("old.gif");
         fs::write(&protected_path, b"1234").unwrap();
@@ -316,5 +401,94 @@ mod tests {
         assert!(!prune_cache_with_limit(&directory, &protected, 3));
         assert!(protected_path.exists());
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn cache_reservation_keeps_protected_files_and_requires_room_for_the_new_file() {
+        let directory = test_cache_directory("cache-reservation");
+        let protected_path = directory.join("active.gif");
+        let disposable_path = directory.join("old.gif");
+        fs::write(&protected_path, b"1234").unwrap();
+        fs::write(&disposable_path, b"5678").unwrap();
+        let protected = HashSet::from([protected_path.clone()]);
+
+        assert!(reserve_cache_space_with_limit(&directory, &protected, 4, 8));
+        assert!(protected_path.exists());
+        assert!(!disposable_path.exists());
+        assert!(!reserve_cache_space_with_limit(
+            &directory, &protected, 1, 4
+        ));
+        assert!(protected_path.exists());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn cache_write_failure_removes_incomplete_file_and_preserves_existing_files() {
+        let directory = test_cache_directory("cache-write-failure");
+        let existing = directory.join("previous.gif");
+        fs::write(&existing, b"GIF89a previous").unwrap();
+
+        let result = cache_file_with(&directory, "new.gif", b"GIF89a new", |path, _| {
+            fs::write(path, b"partial")?;
+            Err(std::io::Error::other("simulated write failure"))
+        });
+
+        assert!(result.is_err());
+        assert!(existing.exists());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn cleanup_removes_incomplete_cache_files() {
+        let directory = test_cache_directory("cache-incomplete");
+        let incomplete = directory.join(".giftray-pending.gif.part");
+        let complete = directory.join("giftray-complete.gif");
+        fs::write(&incomplete, b"partial").unwrap();
+        fs::write(&complete, b"GIF89a complete").unwrap();
+
+        assert!(prune_cache_with_limit(&directory, &HashSet::new(), 100));
+        assert!(!incomplete.exists());
+        assert!(complete.exists());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn clipboard_publication_failure_removes_only_the_new_cache_file() {
+        let directory = test_cache_directory("clipboard-publication-failure");
+        let existing = directory.join("previous.gif");
+        fs::write(&existing, b"GIF89a previous").unwrap();
+        let new_file = cache_file(&directory, "new.gif", b"GIF89a new").unwrap();
+
+        assert!(
+            publish_cached_file(&new_file, |_| Err("simulated clipboard failure".into())).is_err()
+        );
+        assert!(!new_file.exists());
+        assert!(existing.exists());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn clipboard_query_error_does_not_trigger_cache_cleanup() {
+        let directory = test_cache_directory("clipboard-query-error");
+        let existing = directory.join("existing.gif");
+        fs::write(&existing, b"GIF89a existing").unwrap();
+
+        cleanup_cache_directory_with_limit(
+            &directory,
+            Err("simulated clipboard query failure".into()),
+            0,
+        );
+
+        assert!(existing.exists());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn cache_lock_excludes_concurrent_cleanup_and_publication() {
+        let lock = CACHE_LOCK.lock().unwrap();
+        assert!(CACHE_LOCK.try_lock().is_err());
+        drop(lock);
+        assert!(CACHE_LOCK.try_lock().is_ok());
     }
 }
