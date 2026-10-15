@@ -1,6 +1,6 @@
 # P0 — Matriz de testes de interoperabilidade
 
-> **Status atual:** evidências da P0 concluídas; a P0.4 está concluída, condicionada ao merge local aprovado em `develop`. Esta página registra **observações verificáveis**, não expectativas, estimativas ou o que uma API promete na documentação.
+> **Status atual:** evidências da P0 concluídas; a P0.4 foi integrada em `develop` pelo merge local `2c71707`. Esta página registra **observações verificáveis**, não expectativas, estimativas ou o que uma API promete na documentação.
 
 ## Como ler e preencher
 
