@@ -110,6 +110,14 @@ fn is_incomplete_cache_file(path: &Path) -> bool {
         .is_some_and(|name| name.starts_with(".giftray-") && name.ends_with(".part"))
 }
 
+fn is_protected_cache_path(path: &Path, protected: &HashSet<PathBuf>) -> bool {
+    protected.contains(path)
+        || path
+            .canonicalize()
+            .ok()
+            .is_some_and(|canonical| protected.contains(&canonical))
+}
+
 fn prune_cache_with_limit(directory: &Path, protected: &HashSet<PathBuf>, limit: u64) -> bool {
     let now = SystemTime::now();
     let mut files: Vec<_> = fs::read_dir(directory)
@@ -126,7 +134,7 @@ fn prune_cache_with_limit(directory: &Path, protected: &HashSet<PathBuf>, limit:
         .collect();
     for (path, metadata) in &files {
         if is_incomplete_cache_file(path)
-            || (!protected.contains(path)
+            || (!is_protected_cache_path(path, protected)
                 && metadata
                     .modified()
                     .ok()
@@ -142,7 +150,7 @@ fn prune_cache_with_limit(directory: &Path, protected: &HashSet<PathBuf>, limit:
         if total <= limit {
             break;
         }
-        if protected.contains(&path) {
+        if is_protected_cache_path(&path, protected) {
             continue;
         }
         if fs::remove_file(path).is_ok() {
@@ -400,6 +408,21 @@ mod tests {
         assert!(!disposable_path.exists());
         assert!(!prune_cache_with_limit(&directory, &protected, 3));
         assert!(protected_path.exists());
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn cache_cleanup_preserves_a_reconstructed_clipboard_path_after_restart() {
+        let directory = test_cache_directory("cache-restart");
+        let active = directory.join("active.gif");
+        let disposable = directory.join("old.gif");
+        fs::write(&active, b"1234").unwrap();
+        fs::write(&disposable, b"5678").unwrap();
+        let restored_protection = HashSet::from([active.canonicalize().unwrap()]);
+
+        assert!(prune_cache_with_limit(&directory, &restored_protection, 4));
+        assert!(active.exists());
+        assert!(!disposable.exists());
         let _ = fs::remove_dir_all(directory);
     }
 
