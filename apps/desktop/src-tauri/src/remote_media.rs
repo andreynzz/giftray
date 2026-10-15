@@ -173,15 +173,18 @@ fn public_address(ip: IpAddr) -> bool {
                 && !value.is_broadcast()
                 && !value.is_documentation()
                 && octets[0] != 0
+                && octets[0] < 240
                 && !(octets[0] == 100 && (64..=127).contains(&octets[1]))
                 && !(octets[0] == 198 && (18..=19).contains(&octets[1]))
+                && !(octets[0] == 192 && octets[1] == 0 && matches!(octets[2], 0 | 88))
         }
         IpAddr::V6(value) => {
-            !value.is_loopback()
-                && !value.is_unspecified()
-                && !value.is_multicast()
-                && !value.is_unique_local()
-                && !value.is_unicast_link_local()
+            let segments = value.segments();
+            let globally_routable = (segments[0] & 0xe000) == 0x2000;
+            let documentation = (segments[0] == 0x2001 && segments[1] == 0x0db8)
+                || (segments[0] == 0x3fff && (segments[1] & 0xf000) == 0);
+            let transition = (segments[0] == 0x2001 && segments[1] == 0) || segments[0] == 0x2002;
+            globally_routable && !documentation && !transition && value.to_ipv4_mapped().is_none()
         }
     }
 }
@@ -334,16 +337,30 @@ mod tests {
         for value in [
             "127.0.0.1:443",
             "10.0.0.1:443",
+            "169.254.0.1:443",
             "100.64.0.1:443",
+            "192.0.0.1:443",
+            "192.0.2.1:443",
             "198.18.0.1:443",
+            "224.0.0.1:443",
+            "240.0.0.1:443",
+            "[::]:443",
             "[::1]:443",
             "[fc00::1]:443",
             "[fe80::1]:443",
+            "[ff00::1]:443",
+            "[100::1]:443",
+            "[2001:db8::1]:443",
+            "[3fff::1]:443",
+            "[::ffff:192.0.2.1]:443",
+            "[2001::1]:443",
+            "[2002:c000:0201::1]:443",
         ] {
             let address = value.parse().unwrap();
             assert!(validated_addresses(vec![address]).is_err(), "{value}");
         }
         assert!(validated_addresses(vec![public]).is_ok());
+        assert!(validated_addresses(vec!["[2606:4700::1111]:443".parse().unwrap()]).is_ok());
         assert!(validated_addresses(vec![public, "10.0.0.1:443".parse().unwrap()]).is_err());
     }
 
