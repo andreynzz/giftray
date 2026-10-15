@@ -10,6 +10,7 @@ use std::{
 
 const MAX_BYTES: usize = 25 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 3;
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 struct MediaResponse<B> {
     status: u16,
@@ -68,8 +69,26 @@ impl MediaTransport for ReqwestTransport {
 }
 
 async fn download_with<T: MediaTransport>(transport: &mut T, url: &str) -> Result<Vec<u8>, String> {
+    download_with_timeout(transport, url, DOWNLOAD_TIMEOUT).await
+}
+
+async fn download_with_timeout<T: MediaTransport>(
+    transport: &mut T,
+    url: &str,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    tokio::time::timeout(timeout, download_inner(transport, url))
+        .await
+        .map_err(|_| "O download da mídia remota excedeu o tempo limite.")?
+}
+
+async fn download_inner<T: MediaTransport>(
+    transport: &mut T,
+    url: &str,
+) -> Result<Vec<u8>, String> {
     let mut current = Url::parse(url).map_err(|_| "A origem remota não é válida.")?;
-    for _ in 0..=MAX_REDIRECTS {
+    let mut redirects = 0;
+    loop {
         validate_url(&current)?;
         let mut response = transport.send(current.clone()).await?;
         match process_response_head(
@@ -78,7 +97,13 @@ async fn download_with<T: MediaTransport>(transport: &mut T, url: &str) -> Resul
             response.location.as_deref(),
             response.content_length,
         )? {
-            ResponseAction::Redirect(next) => current = next,
+            ResponseAction::Redirect(next) => {
+                if redirects == MAX_REDIRECTS {
+                    return Err("A origem remota excedeu o limite de redirecionamentos.".into());
+                }
+                redirects += 1;
+                current = next;
+            }
             ResponseAction::Body => {
                 let mut bytes = Vec::new();
                 while let Some(chunk) = response.body.next_chunk().await? {
@@ -90,7 +115,6 @@ async fn download_with<T: MediaTransport>(transport: &mut T, url: &str) -> Resul
             }
         }
     }
-    Err("A origem remota excedeu o limite de redirecionamentos.".into())
 }
 
 enum ResponseAction {
@@ -218,10 +242,14 @@ mod tests {
 
     struct FakeBody {
         chunks: VecDeque<Result<Vec<u8>, String>>,
+        chunk_delay: Option<Duration>,
     }
 
     impl MediaBody for FakeBody {
         async fn next_chunk(&mut self) -> Result<Option<Vec<u8>>, String> {
+            if let Some(delay) = self.chunk_delay.take() {
+                tokio::time::sleep(delay).await;
+            }
             match self.chunks.pop_front() {
                 Some(chunk) => chunk.map(Some),
                 None => Ok(None),
@@ -232,6 +260,7 @@ mod tests {
     struct FakeTransport {
         responses: VecDeque<Result<MediaResponse<FakeBody>, String>>,
         requested: Vec<Url>,
+        request_delay: Option<Duration>,
     }
 
     impl MediaTransport for FakeTransport {
@@ -239,10 +268,44 @@ mod tests {
 
         async fn send(&mut self, url: Url) -> Result<MediaResponse<Self::Body>, String> {
             self.requested.push(url);
+            if let Some(delay) = self.request_delay.take() {
+                tokio::time::sleep(delay).await;
+            }
             self.responses
                 .pop_front()
                 .unwrap_or_else(|| Err("O transporte de teste ficou sem respostas.".into()))
         }
+    }
+
+    fn response(
+        status: u16,
+        location: Option<&str>,
+        content_length: Option<u64>,
+        chunks: impl IntoIterator<Item = Result<Vec<u8>, String>>,
+    ) -> MediaResponse<FakeBody> {
+        MediaResponse {
+            status,
+            location: location.map(str::to_owned),
+            content_length,
+            body: FakeBody {
+                chunks: chunks.into_iter().collect(),
+                chunk_delay: None,
+            },
+        }
+    }
+
+    fn transport(
+        responses: impl IntoIterator<Item = Result<MediaResponse<FakeBody>, String>>,
+    ) -> FakeTransport {
+        FakeTransport {
+            responses: responses.into_iter().collect(),
+            requested: Vec::new(),
+            request_delay: None,
+        }
+    }
+
+    fn run_download(transport: &mut FakeTransport, url: &str) -> Result<Vec<u8>, String> {
+        tauri::async_runtime::block_on(download_with(transport, url))
     }
 
     #[test]
@@ -325,24 +388,14 @@ mod tests {
     #[test]
     fn download_with_uses_transport_and_preserves_gif_bytes() {
         let expected = b"GIF89a-original".to_vec();
-        let response = MediaResponse {
-            status: 200,
-            location: None,
-            content_length: None,
-            body: FakeBody {
-                chunks: VecDeque::from([Ok(expected.clone())]),
-            },
-        };
-        let mut transport = FakeTransport {
-            responses: VecDeque::from([Ok(response)]),
-            requested: Vec::new(),
-        };
+        let mut transport = transport([Ok(response(
+            200,
+            None,
+            None,
+            [Ok(b"GIF89a-".to_vec()), Ok(b"original".to_vec())],
+        ))]);
 
-        let actual = tauri::async_runtime::block_on(download_with(
-            &mut transport,
-            "https://cdn.example.test/image.gif",
-        ))
-        .unwrap();
+        let actual = run_download(&mut transport, "https://cdn.example.test/image.gif").unwrap();
 
         assert_eq!(actual, expected);
         assert_eq!(transport.requested.len(), 1);
@@ -350,6 +403,198 @@ mod tests {
             transport.requested[0],
             Url::parse("https://cdn.example.test/image.gif").unwrap()
         );
+    }
+
+    #[test]
+    fn download_with_rejects_http_error_responses() {
+        for status in [404, 500] {
+            let mut transport = transport([Ok(response(status, None, None, []))]);
+            assert!(run_download(&mut transport, "https://cdn.example.test/image.gif").is_err());
+        }
+    }
+
+    #[test]
+    fn download_with_rejects_request_and_body_errors_without_partial_bytes() {
+        let mut request_error = transport([Err("Falha de transporte simulada.".into())]);
+        assert!(run_download(&mut request_error, "https://cdn.example.test/image.gif").is_err());
+
+        let mut body_error = transport([Ok(response(
+            200,
+            None,
+            None,
+            [
+                Ok(b"GIF89a-parcial".to_vec()),
+                Err("Falha de leitura simulada.".into()),
+            ],
+        ))]);
+        assert!(run_download(&mut body_error, "https://cdn.example.test/image.gif").is_err());
+    }
+
+    #[test]
+    fn download_with_follows_https_redirect_and_records_requested_urls() {
+        let mut transport = transport([
+            Ok(response(
+                302,
+                Some("https://media.example.test/image.gif"),
+                None,
+                [],
+            )),
+            Ok(response(200, None, None, [Ok(b"GIF89a".to_vec())])),
+        ]);
+
+        assert_eq!(
+            run_download(&mut transport, "https://cdn.example.test/image.gif").unwrap(),
+            b"GIF89a"
+        );
+        assert_eq!(
+            transport.requested,
+            vec![
+                Url::parse("https://cdn.example.test/image.gif").unwrap(),
+                Url::parse("https://media.example.test/image.gif").unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn download_with_allows_three_redirects_and_rejects_the_fourth() {
+        let redirects = [
+            Ok(response(
+                302,
+                Some("https://one.example.test/a.gif"),
+                None,
+                [],
+            )),
+            Ok(response(
+                302,
+                Some("https://two.example.test/a.gif"),
+                None,
+                [],
+            )),
+            Ok(response(
+                302,
+                Some("https://three.example.test/a.gif"),
+                None,
+                [],
+            )),
+            Ok(response(200, None, None, [Ok(b"GIF89a".to_vec())])),
+        ];
+        let mut accepted = transport(redirects);
+        assert_eq!(
+            run_download(&mut accepted, "https://cdn.example.test/image.gif").unwrap(),
+            b"GIF89a"
+        );
+        assert_eq!(
+            accepted.requested,
+            vec![
+                Url::parse("https://cdn.example.test/image.gif").unwrap(),
+                Url::parse("https://one.example.test/a.gif").unwrap(),
+                Url::parse("https://two.example.test/a.gif").unwrap(),
+                Url::parse("https://three.example.test/a.gif").unwrap(),
+            ]
+        );
+
+        let mut rejected = transport([
+            Ok(response(
+                302,
+                Some("https://one.example.test/a.gif"),
+                None,
+                [],
+            )),
+            Ok(response(
+                302,
+                Some("https://two.example.test/a.gif"),
+                None,
+                [],
+            )),
+            Ok(response(
+                302,
+                Some("https://three.example.test/a.gif"),
+                None,
+                [],
+            )),
+            Ok(response(
+                302,
+                Some("https://four.example.test/a.gif"),
+                None,
+                [],
+            )),
+        ]);
+        assert!(run_download(&mut rejected, "https://cdn.example.test/image.gif").is_err());
+        assert_eq!(rejected.requested.len(), 4);
+    }
+
+    #[test]
+    fn download_with_terminates_redirect_loops_and_rejects_forbidden_destinations() {
+        let mut loop_transport = transport([
+            Ok(response(
+                302,
+                Some("https://loop.example.test/b.gif"),
+                None,
+                [],
+            )),
+            Ok(response(
+                302,
+                Some("https://loop.example.test/a.gif"),
+                None,
+                [],
+            )),
+            Ok(response(
+                302,
+                Some("https://loop.example.test/b.gif"),
+                None,
+                [],
+            )),
+            Ok(response(
+                302,
+                Some("https://loop.example.test/a.gif"),
+                None,
+                [],
+            )),
+        ]);
+        assert!(run_download(&mut loop_transport, "https://loop.example.test/a.gif").is_err());
+        assert_eq!(loop_transport.requested.len(), 4);
+
+        for location in ["http://media.example.test/a.gif", "https://127.0.0.1/a.gif"] {
+            let mut transport = transport([Ok(response(302, Some(location), None, []))]);
+            assert!(run_download(&mut transport, "https://cdn.example.test/image.gif").is_err());
+            assert_eq!(transport.requested.len(), 1);
+        }
+    }
+
+    #[test]
+    fn download_with_enforces_effective_limit_when_content_length_is_absent_or_misleading() {
+        let mut missing_length =
+            transport([Ok(response(200, None, None, [Ok(b"GIF89a".to_vec())]))]);
+        assert_eq!(
+            run_download(&mut missing_length, "https://cdn.example.test/image.gif").unwrap(),
+            b"GIF89a"
+        );
+
+        let mut misleading_length = transport([Ok(response(
+            200,
+            None,
+            Some(1),
+            [Ok(vec![0; MAX_BYTES + 1])],
+        ))]);
+        assert!(
+            run_download(&mut misleading_length, "https://cdn.example.test/image.gif").is_err()
+        );
+    }
+
+    #[test]
+    fn download_with_timeout_limits_the_entire_operation() {
+        let mut delayed_response = response(200, None, None, [Ok(b"GIF89a".to_vec())]);
+        delayed_response.body.chunk_delay = Some(Duration::from_millis(25));
+        let mut transport = transport([Ok(delayed_response)]);
+
+        let result = tauri::async_runtime::block_on(download_with_timeout(
+            &mut transport,
+            "https://cdn.example.test/image.gif",
+            Duration::from_millis(1),
+        ));
+
+        assert!(result.is_err());
+        assert_eq!(transport.requested.len(), 1);
     }
 }
 
