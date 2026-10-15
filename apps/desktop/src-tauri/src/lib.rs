@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 mod clipboard;
+mod remote_media;
 mod shortcuts;
 mod window;
 
@@ -32,7 +33,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             window::hide_main_window,
             shortcuts::update_global_shortcut,
-            clipboard::copy_media_file
+            clipboard::copy_media_file,
+            clipboard::copy_remote_media_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running GIFTray");

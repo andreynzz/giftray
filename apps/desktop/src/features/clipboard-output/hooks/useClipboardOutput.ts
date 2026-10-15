@@ -4,7 +4,7 @@
 
 import { useCallback, useState } from "react";
 import type { MediaPreviewState } from "../../media-import/hooks/useMediaImport";
-import { copyFileToWindowsClipboard, copyText } from "../../../platform/tauri/clipboard";
+import { copyFileToWindowsClipboard, copyRemoteFileToWindowsClipboard, copyText } from "../../../platform/tauri/clipboard";
 import { canCopyFile, canCopyLink } from "../lib/copy-mode";
 
 export type ClipboardOutputStatus = "idle" | "copying-link" | "copying-file" | "success" | "error";
@@ -35,13 +35,15 @@ export function useClipboardOutput() {
     if (
       !canCopyFile(preview) ||
       (preview.status !== "loading" && preview.status !== "ready") ||
-      preview.media.candidate.kind !== "file"
+      (preview.media.candidate.kind !== "file" && preview.media.candidate.kind !== "url")
     ) return;
     setStatus("copying-file");
     setMessage(undefined);
     try {
-      const { file } = preview.media.candidate;
-      await copyFileToWindowsClipboard(file.name, new Uint8Array(await file.arrayBuffer()));
+      if (preview.media.candidate.kind === "file") {
+        const { file } = preview.media.candidate;
+        await copyFileToWindowsClipboard(file.name, new Uint8Array(await file.arrayBuffer()));
+      } else await copyRemoteFileToWindowsClipboard(preview.media.candidate.url);
       setStatus("success");
       setMessage("Arquivo preparado e copiado. Cole-o manualmente no aplicativo de destino.");
     } catch {

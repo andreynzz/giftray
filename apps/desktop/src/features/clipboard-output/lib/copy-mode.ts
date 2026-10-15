@@ -17,7 +17,7 @@ export function canCopyLink(preview: MediaPreviewState): boolean {
 export function canCopyFile(preview: MediaPreviewState): boolean {
   return (
     (preview.status === "loading" || preview.status === "ready") &&
-    preview.media.candidate.kind === "file"
+    (preview.media.candidate.kind === "file" || preview.media.candidate.kind === "url")
   );
 }
 
