@@ -19,6 +19,7 @@ use std::{
 };
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -66,6 +67,34 @@ pub struct LibraryItem {
     pub original_name: Option<String>,
     pub imported_at: i64,
     pub availability: Availability,
+}
+
+/// The IPC-safe projection of a persistent item. It intentionally excludes
+/// storage keys, hashes and every filesystem path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicLibraryItem {
+    pub id: String,
+    pub format: String,
+    pub byte_size: u64,
+    pub source_kind: String,
+    pub original_name: Option<String>,
+    pub imported_at: i64,
+    pub availability: String,
+}
+
+impl From<LibraryItem> for PublicLibraryItem {
+    fn from(item: LibraryItem) -> Self {
+        Self {
+            id: item.id,
+            format: item.format.as_str().into(),
+            byte_size: item.byte_size,
+            source_kind: item.source_kind.as_str().into(),
+            original_name: item.original_name,
+            imported_at: item.imported_at,
+            availability: item.availability.as_str().into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,7 +164,7 @@ pub enum LibraryError {
 }
 
 /// Directory and database handle for the permanent local library.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Library {
     root: PathBuf,
 }
