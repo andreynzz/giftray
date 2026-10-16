@@ -1,0 +1,712 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+//! Persistent, native-only local media library.
+//!
+//! This module deliberately has no Tauri command. A future native picker may
+//! call `Library::import_local_file`, but paths received from the WebView must
+//! never be routed here directly.
+
+#![allow(dead_code)] // P1.1.1 establishes the internal API before the native picker exists.
+
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{self, Read, Write},
+    path::{Component, Path, PathBuf},
+    sync::{Mutex, OnceLock},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use rusqlite::{params, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+pub const MAX_MEDIA_BYTES: u64 = 25 * 1024 * 1024;
+const LIBRARY_DIRECTORY: &str = "library";
+const MEDIA_DIRECTORY: &str = "media";
+const DATABASE_FILE: &str = "library.sqlite3";
+const LOCK_FILE: &str = "library.lock";
+static IN_PROCESS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaFormat {
+    Gif,
+    Webp,
+    Png,
+}
+
+impl MediaFormat {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Gif => "gif",
+            Self::Webp => "webp",
+            Self::Png => "png",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self, LibraryError> {
+        match value {
+            "gif" => Ok(Self::Gif),
+            "webp" => Ok(Self::Webp),
+            "png" => Ok(Self::Png),
+            _ => Err(LibraryError::Database),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryItem {
+    pub id: String,
+    pub format: MediaFormat,
+    pub storage_key: String,
+    pub byte_size: u64,
+    pub content_sha256: String,
+    pub source_kind: SourceKind,
+    pub original_name: Option<String>,
+    pub imported_at: i64,
+    pub availability: Availability,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceKind {
+    LocalFile,
+    RemoteUrl,
+    ExternalRequest,
+}
+
+impl SourceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalFile => "local_file",
+            Self::RemoteUrl => "remote_url",
+            Self::ExternalRequest => "external_request",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self, LibraryError> {
+        match value {
+            "local_file" => Ok(Self::LocalFile),
+            "remote_url" => Ok(Self::RemoteUrl),
+            "external_request" => Ok(Self::ExternalRequest),
+            _ => Err(LibraryError::Database),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Availability {
+    Available,
+    Missing,
+}
+
+impl Availability {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::Missing => "missing",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self, LibraryError> {
+        match value {
+            "available" => Ok(Self::Available),
+            "missing" => Ok(Self::Missing),
+            _ => Err(LibraryError::Database),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ImportResult {
+    Imported { item: LibraryItem },
+    AlreadyPresent { item: LibraryItem },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum LibraryError {
+    InUse,
+    EmptyFile,
+    TooLarge,
+    InvalidMedia,
+    SourceUnavailable,
+    Storage,
+    Database,
+}
+
+/// Directory and database handle for the permanent local library.
+#[derive(Debug)]
+pub struct Library {
+    root: PathBuf,
+}
+
+impl Library {
+    /// Opens and recovers `<app_local_data_dir>/library`. This is native-only.
+    pub fn initialize(app_local_data_dir: &Path) -> Result<Self, LibraryError> {
+        let library = Self {
+            root: app_local_data_dir.join(LIBRARY_DIRECTORY),
+        };
+        fs::create_dir_all(library.media_directory()).map_err(|_| LibraryError::Storage)?;
+        {
+            let _operation = library.operation_lock()?;
+            let connection = library.open_connection()?;
+            migrate(&connection)?;
+            library.recover(&connection)?;
+        }
+        Ok(library)
+    }
+
+    /// Imports a local file selected by a trusted native flow.
+    pub fn import_local_file(&self, source: &Path) -> Result<ImportResult, LibraryError> {
+        self.import_local_file_with(
+            source,
+            |part, input| copy_to_part(part, input),
+            publish_part,
+        )
+    }
+
+    pub fn get_item(&self, id: &str) -> Result<Option<LibraryItem>, LibraryError> {
+        let _operation = self.operation_lock()?;
+        let connection = self.open_connection()?;
+        migrate(&connection)?;
+        query_item(&connection, "WHERE id = ?1", params![id])
+    }
+
+    pub fn list_items(&self) -> Result<Vec<LibraryItem>, LibraryError> {
+        let _operation = self.operation_lock()?;
+        let connection = self.open_connection()?;
+        migrate(&connection)?;
+        let mut statement = connection
+            .prepare("SELECT id, storage_key, format, byte_size, content_sha256, source_kind, original_name, imported_at, availability FROM library_items ORDER BY imported_at DESC, id ASC")
+            .map_err(|_| LibraryError::Database)?;
+        let rows = statement
+            .query_map([], row_to_item)
+            .map_err(|_| LibraryError::Database)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| LibraryError::Database)
+    }
+
+    pub fn find_by_sha256(&self, sha256: &str) -> Result<Option<LibraryItem>, LibraryError> {
+        let _operation = self.operation_lock()?;
+        let connection = self.open_connection()?;
+        migrate(&connection)?;
+        query_item(&connection, "WHERE content_sha256 = ?1", params![sha256])
+    }
+
+    fn import_local_file_with<Copy, Publish>(
+        &self,
+        source: &Path,
+        copy: Copy,
+        publish: Publish,
+    ) -> Result<ImportResult, LibraryError>
+    where
+        Copy: FnOnce(&Path, &mut File) -> Result<(MediaFormat, u64, String), LibraryError>,
+        Publish: FnOnce(&Path, &Path) -> Result<(), LibraryError>,
+    {
+        let _operation = self.operation_lock()?;
+        let mut source_file = File::open(source).map_err(|_| LibraryError::SourceUnavailable)?;
+        let id = Uuid::new_v4();
+        let part = self.media_directory().join(format!(".{id}.pending.part"));
+        let (format, byte_size, digest) = match copy(&part, &mut source_file) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = fs::remove_file(&part);
+                return Err(error);
+            }
+        };
+
+        let connection = self.open_connection()?;
+        migrate(&connection)?;
+        if let Some(item) = query_item(&connection, "WHERE content_sha256 = ?1", params![&digest])?
+        {
+            let _ = fs::remove_file(&part);
+            return Ok(ImportResult::AlreadyPresent { item });
+        }
+
+        let storage_key = format!("{id}.{}", format.as_str());
+        let final_path = self.media_directory().join(&storage_key);
+        if publish(&part, &final_path).is_err() {
+            let _ = fs::remove_file(&part);
+            return Err(LibraryError::Storage);
+        }
+
+        let item = LibraryItem {
+            id: id.to_string(),
+            format,
+            storage_key,
+            byte_size,
+            content_sha256: digest,
+            source_kind: SourceKind::LocalFile,
+            original_name: sanitized_name(source),
+            imported_at: unix_timestamp()?,
+            availability: Availability::Available,
+        };
+        if insert_item(&connection, &item).is_err() {
+            // Do not remove a final file when cleanup itself fails; recovery preserves it.
+            let _ = fs::remove_file(&final_path);
+            return Err(LibraryError::Database);
+        }
+        Ok(ImportResult::Imported { item })
+    }
+
+    fn media_directory(&self) -> PathBuf {
+        self.root.join(MEDIA_DIRECTORY)
+    }
+
+    fn open_connection(&self) -> Result<Connection, LibraryError> {
+        let connection =
+            Connection::open(self.root.join(DATABASE_FILE)).map_err(|_| LibraryError::Database)?;
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| LibraryError::Database)?;
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .map_err(|_| LibraryError::Database)?;
+        Ok(connection)
+    }
+
+    fn operation_lock(&self) -> Result<OperationLock<'_>, LibraryError> {
+        let in_process = IN_PROCESS_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .map_err(|_| LibraryError::InUse)?;
+        let path = self.root.join(LOCK_FILE);
+        // The parent directory and lock file are created during initialization;
+        // an open failure here is therefore treated as an occupied library.
+        let file = open_library_lock(&path).map_err(|_| LibraryError::InUse)?;
+        Ok(OperationLock {
+            _in_process: in_process,
+            _file: file,
+        })
+    }
+
+    fn recover(&self, connection: &Connection) -> Result<(), LibraryError> {
+        // Recovery is deliberately conservative: only our exact unpublished name is removed.
+        for entry in fs::read_dir(self.media_directory()).map_err(|_| LibraryError::Storage)? {
+            let entry = entry.map_err(|_| LibraryError::Storage)?;
+            if entry
+                .file_type()
+                .map_err(|_| LibraryError::Storage)?
+                .is_file()
+                && is_internal_part(&entry.path())
+            {
+                fs::remove_file(entry.path()).map_err(|_| LibraryError::Storage)?;
+            }
+        }
+        let mut statement = connection
+            .prepare("SELECT id, storage_key FROM library_items")
+            .map_err(|_| LibraryError::Database)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|_| LibraryError::Database)?;
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|_| LibraryError::Database)?;
+        for row in rows {
+            let (id, storage_key) = row.map_err(|_| LibraryError::Database)?;
+            if !safe_storage_key(&id, &storage_key)
+                || !self.media_directory().join(&storage_key).is_file()
+            {
+                transaction
+                    .execute(
+                        "UPDATE library_items SET availability = 'missing' WHERE id = ?1",
+                        params![id],
+                    )
+                    .map_err(|_| LibraryError::Database)?;
+            }
+        }
+        transaction.commit().map_err(|_| LibraryError::Database)
+    }
+}
+
+struct OperationLock<'a> {
+    _in_process: std::sync::MutexGuard<'a, ()>,
+    _file: File,
+}
+
+#[cfg(windows)]
+fn open_library_lock(path: &Path) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    // share_mode(0) maps to a CreateFile handle that no other process can
+    // open. Windows closes it automatically after a crash or normal exit.
+    OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .share_mode(0)
+        .open(path)
+}
+
+#[cfg(not(windows))]
+fn open_library_lock(path: &Path) -> io::Result<File> {
+    OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(path)
+}
+
+fn migrate(connection: &Connection) -> Result<(), LibraryError> {
+    connection.execute_batch("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);").map_err(|_| LibraryError::Database)?;
+    let present: Option<i64> = connection
+        .query_row(
+            "SELECT version FROM schema_migrations WHERE version = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| LibraryError::Database)?;
+    if present.is_none() {
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|_| LibraryError::Database)?;
+        transaction.execute_batch("CREATE TABLE library_items (id TEXT PRIMARY KEY, storage_key TEXT NOT NULL UNIQUE, format TEXT NOT NULL CHECK (format IN ('gif', 'webp', 'png')), byte_size INTEGER NOT NULL CHECK (byte_size > 0 AND byte_size <= 26214400), content_sha256 TEXT NOT NULL UNIQUE CHECK (length(content_sha256) = 64), source_kind TEXT NOT NULL CHECK (source_kind IN ('local_file', 'remote_url', 'external_request')), original_name TEXT NULL, imported_at INTEGER NOT NULL, availability TEXT NOT NULL CHECK (availability IN ('available', 'missing')));").map_err(|_| LibraryError::Database)?;
+        transaction
+            .execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?1)",
+                params![unix_timestamp()?],
+            )
+            .map_err(|_| LibraryError::Database)?;
+        transaction.commit().map_err(|_| LibraryError::Database)?;
+    }
+    Ok(())
+}
+
+fn copy_to_part(
+    part: &Path,
+    source: &mut File,
+) -> Result<(MediaFormat, u64, String), LibraryError> {
+    let mut output = File::create(part).map_err(|_| LibraryError::Storage)?;
+    let mut buffer = [0u8; 8192];
+    let mut prefix = Vec::with_capacity(12);
+    let mut total = 0u64;
+    let mut digest = Sha256::new();
+    loop {
+        let count = source
+            .read(&mut buffer)
+            .map_err(|_| LibraryError::SourceUnavailable)?;
+        if count == 0 {
+            break;
+        }
+        total = total
+            .checked_add(count as u64)
+            .ok_or(LibraryError::TooLarge)?;
+        if total > MAX_MEDIA_BYTES {
+            return Err(LibraryError::TooLarge);
+        }
+        if prefix.len() < 12 {
+            prefix.extend_from_slice(&buffer[..count.min(12 - prefix.len())]);
+        }
+        output
+            .write_all(&buffer[..count])
+            .map_err(|_| LibraryError::Storage)?;
+        digest.update(&buffer[..count]);
+    }
+    output.sync_all().map_err(|_| LibraryError::Storage)?;
+    if total == 0 {
+        return Err(LibraryError::EmptyFile);
+    }
+    let format = format_from_signature(&prefix).ok_or(LibraryError::InvalidMedia)?;
+    Ok((format, total, format!("{:x}", digest.finalize())))
+}
+
+fn publish_part(part: &Path, final_path: &Path) -> Result<(), LibraryError> {
+    fs::rename(part, final_path).map_err(|_| LibraryError::Storage)
+}
+
+fn format_from_signature(bytes: &[u8]) -> Option<MediaFormat> {
+    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some(MediaFormat::Gif)
+    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some(MediaFormat::Png)
+    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some(MediaFormat::Webp)
+    } else {
+        None
+    }
+}
+
+fn is_internal_part(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let Some(stem) = name
+        .strip_prefix('.')
+        .and_then(|value| value.strip_suffix(".pending.part"))
+    else {
+        return false;
+    };
+    Uuid::parse_str(stem).is_ok()
+}
+
+fn safe_storage_key(id: &str, key: &str) -> bool {
+    Path::new(key).components().count() == 1
+        && Path::new(key)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+        && ["gif", "webp", "png"]
+            .iter()
+            .any(|extension| key == format!("{id}.{extension}"))
+}
+
+fn sanitized_name(source: &Path) -> Option<String> {
+    let name = source.file_name()?.to_str()?.trim();
+    if name.is_empty() || name.chars().any(char::is_control) {
+        None
+    } else {
+        Some(name.chars().take(255).collect())
+    }
+}
+
+fn unix_timestamp() -> Result<i64, LibraryError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| LibraryError::Database)
+        .map(|value| value.as_secs() as i64)
+}
+
+fn insert_item(connection: &Connection, item: &LibraryItem) -> Result<(), LibraryError> {
+    connection.execute("INSERT INTO library_items (id, storage_key, format, byte_size, content_sha256, source_kind, original_name, imported_at, availability) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)", params![item.id, item.storage_key, item.format.as_str(), item.byte_size as i64, item.content_sha256, item.source_kind.as_str(), item.original_name, item.imported_at, item.availability.as_str()]).map_err(|_| LibraryError::Database)?;
+    Ok(())
+}
+
+fn query_item<P: rusqlite::Params>(
+    connection: &Connection,
+    filter: &str,
+    parameters: P,
+) -> Result<Option<LibraryItem>, LibraryError> {
+    let sql = format!("SELECT id, storage_key, format, byte_size, content_sha256, source_kind, original_name, imported_at, availability FROM library_items {filter}");
+    connection
+        .query_row(&sql, parameters, row_to_item)
+        .optional()
+        .map_err(|_| LibraryError::Database)
+}
+
+fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryItem> {
+    let format = row.get::<_, String>(2)?;
+    let source_kind = row.get::<_, String>(5)?;
+    let availability = row.get::<_, String>(8)?;
+    Ok(LibraryItem {
+        id: row.get(0)?,
+        storage_key: row.get(1)?,
+        format: MediaFormat::from_str(&format).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        byte_size: row.get::<_, i64>(3)? as u64,
+        content_sha256: row.get(4)?,
+        source_kind: SourceKind::from_str(&source_kind)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+        original_name: row.get(6)?,
+        imported_at: row.get(7)?,
+        availability: Availability::from_str(&availability)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_root(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("giftray-library-{name}-{}", Uuid::new_v4()));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+    fn source(root: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = root.join(name);
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+    fn imported(result: ImportResult) -> LibraryItem {
+        match result {
+            ImportResult::Imported { item } => item,
+            _ => panic!("expected import"),
+        }
+    }
+
+    #[test]
+    fn initializes_empty_database_and_reapplies_migration() {
+        let root = temp_root("migration");
+        let library = Library::initialize(&root).unwrap();
+        assert!(library.list_items().unwrap().is_empty());
+        assert!(Library::initialize(&root).is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imports_supported_formats_preserving_bytes_hash_and_uuid() {
+        let root = temp_root("formats");
+        let library = Library::initialize(&root).unwrap();
+        for (name, bytes, format) in [
+            ("a.gif", b"GIF89a gif".as_slice(), MediaFormat::Gif),
+            ("b.webp", b"RIFFxxxxWEBP webp".as_slice(), MediaFormat::Webp),
+            (
+                "c.png",
+                b"\x89PNG\r\n\x1a\n png".as_slice(),
+                MediaFormat::Png,
+            ),
+        ] {
+            let original = source(&root, name, bytes);
+            let item = imported(library.import_local_file(&original).unwrap());
+            assert_eq!(item.format, format);
+            assert!(Uuid::parse_str(&item.id).is_ok());
+            assert_eq!(item.content_sha256.len(), 64);
+            assert_eq!(
+                fs::read(library.media_directory().join(&item.storage_key)).unwrap(),
+                bytes
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_keeps_existing_metadata_and_reopens_database() {
+        let root = temp_root("duplicate");
+        let source = source(&root, "reaction.gif", b"GIF89a same");
+        let item = imported(
+            Library::initialize(&root)
+                .unwrap()
+                .import_local_file(&source)
+                .unwrap(),
+        );
+        let library = Library::initialize(&root).unwrap();
+        match library.import_local_file(&source).unwrap() {
+            ImportResult::AlreadyPresent { item: existing } => assert_eq!(existing.id, item.id),
+            _ => panic!("expected duplicate"),
+        }
+        assert_eq!(library.get_item(&item.id).unwrap(), Some(item));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_empty_and_oversized_files() {
+        let root = temp_root("invalid");
+        let library = Library::initialize(&root).unwrap();
+        assert_eq!(
+            library
+                .import_local_file(&source(&root, "bad.bin", b"not media"))
+                .unwrap_err(),
+            LibraryError::InvalidMedia
+        );
+        assert_eq!(
+            library
+                .import_local_file(&source(&root, "empty.gif", b""))
+                .unwrap_err(),
+            LibraryError::EmptyFile
+        );
+        let large = root.join("large.gif");
+        let mut file = File::create(&large).unwrap();
+        file.write_all(b"GIF89a").unwrap();
+        file.set_len(MAX_MEDIA_BYTES + 1).unwrap();
+        assert_eq!(
+            library.import_local_file(&large).unwrap_err(),
+            LibraryError::TooLarge
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cleans_part_after_write_or_publish_failure() {
+        let root = temp_root("failures");
+        let library = Library::initialize(&root).unwrap();
+        let input = source(&root, "ok.gif", b"GIF89a ok");
+        assert_eq!(
+            library
+                .import_local_file_with(
+                    &input,
+                    |part, _| {
+                        fs::write(part, b"partial").unwrap();
+                        Err(LibraryError::Storage)
+                    },
+                    publish_part
+                )
+                .unwrap_err(),
+            LibraryError::Storage
+        );
+        assert_eq!(
+            library
+                .import_local_file_with(&input, copy_to_part, |_, _| Err(LibraryError::Storage))
+                .unwrap_err(),
+            LibraryError::Storage
+        );
+        assert_eq!(fs::read_dir(library.media_directory()).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn recovery_removes_our_parts_marks_missing_and_preserves_orphans() {
+        let root = temp_root("recovery");
+        let library = Library::initialize(&root).unwrap();
+        let input = source(&root, "ok.gif", b"GIF89a ok");
+        let item = imported(library.import_local_file(&input).unwrap());
+        fs::remove_file(library.media_directory().join(&item.storage_key)).unwrap();
+        let part = library
+            .media_directory()
+            .join(format!(".{}.pending.part", Uuid::new_v4()));
+        fs::write(&part, b"partial").unwrap();
+        let orphan = library
+            .media_directory()
+            .join(format!("{}.gif", Uuid::new_v4()));
+        fs::write(&orphan, b"GIF89a orphan").unwrap();
+        let unknown = library.media_directory().join("foreign.part");
+        fs::write(&unknown, b"keep").unwrap();
+        let recovered = Library::initialize(&root).unwrap();
+        assert!(!part.exists());
+        assert!(orphan.exists());
+        assert!(unknown.exists());
+        assert_eq!(
+            recovered.get_item(&item.id).unwrap().unwrap().availability,
+            Availability::Missing
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn list_is_ordered_and_lock_is_exclusive() {
+        let root = temp_root("locking");
+        let library = Library::initialize(&root).unwrap();
+        imported(
+            library
+                .import_local_file(&source(&root, "a.gif", b"GIF89a a"))
+                .unwrap(),
+        );
+        imported(
+            library
+                .import_local_file(&source(&root, "b.gif", b"GIF89a b"))
+                .unwrap(),
+        );
+        let items = library.list_items().unwrap();
+        assert!(items.windows(2).all(|pair| {
+            pair[0].imported_at > pair[1].imported_at
+                || (pair[0].imported_at == pair[1].imported_at && pair[0].id <= pair[1].id)
+        }));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lock_is_exclusive_between_processes() {
+        if let Some(root) = std::env::var_os("GIFTRAY_LIBRARY_LOCK_HELPER") {
+            assert_eq!(
+                Library::initialize(Path::new(&root)).unwrap_err(),
+                LibraryError::InUse
+            );
+            return;
+        }
+
+        let root = temp_root("process-lock");
+        let library = Library::initialize(&root).unwrap();
+        let held = library.operation_lock().unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "library::tests::lock_is_exclusive_between_processes",
+            ])
+            .env("GIFTRAY_LIBRARY_LOCK_HELPER", &root)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        drop(held);
+        fs::remove_dir_all(root).unwrap();
+    }
+}

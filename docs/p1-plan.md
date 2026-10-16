@@ -312,3 +312,11 @@ Não declarar testes simulados como prova de CF_HDROP, Explorer, Discord, Window
 ## 13. Próximo passo recomendado
 
 As direções da seção 11 já estão aprovadas. Antes de iniciar P1.1, selecionar e justificar as crates e versões necessárias no escopo do incremento. Em seguida, implementar apenas P1.1 em uma feature branch, com testes de filesystem/SQLite determinísticos e smoke tests Windows separados. Não iniciar extensão, Explorer ou P1.4 como condição para validar a biblioteca mínima.
+
+## 14. Registro de implementação P1.1.1
+
+O primeiro incremento usa `rusqlite` com a feature `bundled`: a biblioteca SQLite acompanha o binário Rust, evitando depender de uma DLL SQLite instalada no Windows e sem expor qualquer plugin ou acesso ao banco para a WebView. `uuid` gera IDs v4 opacos, `sha2` calcula SHA-256 durante a cópia em streaming e `fs4` usa o lock exclusivo real do sistema operacional em `library.lock`; o arquivo do lock sozinho nunca é usado como indicador de posse.
+
+`library.rs` é uma fronteira nativa interna, sem comando Tauri de importação. A inicialização cria e migra `library.sqlite3`, limpa somente `.part` com o padrão interno, marca registros cujo arquivo controlado sumiu como `missing` e preserva arquivos finais sem registro. A importação copia para `.part`, limita 25 MiB, confirma a assinatura e publica por `rename` antes do `INSERT`; uma falha de banco tenta remover o arquivo novo, mas preserva-o se essa remoção falhar.
+
+Os testes deste incremento usam diretórios temporários isolados para esquema vazio e migração repetida, formatos aceitos, bytes/digest/UUID, duplicata, reabertura, ordenação, entradas inválidas, limite, falhas simuladas e recuperação. A validação manual em Windows 10/11 ainda é necessária antes de alegar comportamento em disco sob antivírus, falta de espaço ou encerramento real do processo.

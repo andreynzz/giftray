@@ -3,10 +3,12 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 mod clipboard;
+mod library;
 mod remote_media;
 mod shortcuts;
 mod window;
 
+use tauri::Manager;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 pub fn run() {
@@ -27,6 +29,23 @@ pub fn run() {
         )))
         .setup(move |app| {
             clipboard::cleanup_clipboard_cache(&app.handle());
+            // Persistent-library recovery is native-only and separate from the
+            // disposable clipboard cache. A second process simply skips it.
+            match app.handle().path().app_local_data_dir() {
+                Ok(directory) => match library::Library::initialize(&directory) {
+                    Ok(_) | Err(library::LibraryError::InUse) => {}
+                    Err(_) => {
+                        return Err(Box::<dyn std::error::Error>::from(
+                            "library initialization failed",
+                        ))
+                    }
+                },
+                Err(_) => {
+                    return Err(Box::<dyn std::error::Error>::from(
+                        "library data directory unavailable",
+                    ))
+                }
+            }
             app.global_shortcut().register(initial_shortcut)?;
             Ok(())
         })
