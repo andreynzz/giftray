@@ -6,8 +6,8 @@ import { useEffect } from "react";
 import type { RefObject } from "react";
 import { listenForSearchWindowOpened } from "../platform/tauri/window";
 
-export function useSearchWindowFocus(
-  inputRef: RefObject<HTMLInputElement | null>,
+export function useSearchWindowFocus<T extends HTMLElement>(
+  inputRef: RefObject<T | null>,
 ): void {
   useEffect(() => {
     const focus = () => inputRef.current?.focus();

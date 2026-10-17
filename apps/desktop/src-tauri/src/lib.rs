@@ -3,16 +3,20 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 mod clipboard;
+mod library;
+mod library_commands;
 mod remote_media;
 mod shortcuts;
 mod window;
 
+use tauri::Manager;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 pub fn run() {
     let initial_shortcut = shortcuts::initial_shortcut();
     tauri::Builder::default()
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
@@ -27,6 +31,25 @@ pub fn run() {
         )))
         .setup(move |app| {
             clipboard::cleanup_clipboard_cache(&app.handle());
+            // Persistent-library recovery is native-only and separate from the
+            // disposable clipboard cache. A second process simply skips it.
+            let runtime = match app.handle().path().app_local_data_dir() {
+                Ok(directory) => match library::Library::initialize(&directory) {
+                    Ok(library) => library_commands::LibraryRuntime::Ready(library),
+                    Err(library::LibraryError::InUse) => library_commands::LibraryRuntime::InUse,
+                    Err(_) => {
+                        return Err(Box::<dyn std::error::Error>::from(
+                            "library initialization failed",
+                        ))
+                    }
+                },
+                Err(_) => {
+                    return Err(Box::<dyn std::error::Error>::from(
+                        "library data directory unavailable",
+                    ))
+                }
+            };
+            app.manage(runtime);
             app.global_shortcut().register(initial_shortcut)?;
             Ok(())
         })
@@ -34,7 +57,9 @@ pub fn run() {
             window::hide_main_window,
             shortcuts::update_global_shortcut,
             clipboard::copy_media_file,
-            clipboard::copy_remote_media_file
+            clipboard::copy_remote_media_file,
+            library_commands::select_and_import_media,
+            library_commands::list_library_items
         ])
         .run(tauri::generate_context!())
         .expect("error while running GIFTray");

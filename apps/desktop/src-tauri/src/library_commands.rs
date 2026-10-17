@@ -1,0 +1,139 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+//! Narrow Tauri boundary for the persistent library.
+
+use std::path::PathBuf;
+
+use serde::Serialize;
+use tauri::{AppHandle, State};
+use tauri_plugin_dialog::DialogExt;
+
+use crate::library::{ImportResult, Library, LibraryError, PublicLibraryItem};
+
+pub enum LibraryRuntime {
+    Ready(Library),
+    InUse,
+}
+
+impl LibraryRuntime {
+    pub fn library(&self) -> Result<Library, String> {
+        match self {
+            Self::Ready(library) => Ok(library.clone()),
+            Self::InUse => Err("A biblioteca está em uso por outra instância.".into()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum PublicImportResult {
+    Imported { item: PublicLibraryItem },
+    AlreadyPresent { item: PublicLibraryItem },
+    Cancelled,
+}
+
+/// Opens the native picker. No path crosses the WebView IPC boundary.
+#[tauri::command]
+pub async fn select_and_import_media(
+    app: AppHandle,
+    library: State<'_, LibraryRuntime>,
+) -> Result<PublicImportResult, String> {
+    let library = library.library()?;
+    let selected = app
+        .dialog()
+        .file()
+        .add_filter("Mídia", &["gif", "webp", "png"])
+        .blocking_pick_file();
+    let Some(selected) = selected else {
+        return Ok(PublicImportResult::Cancelled);
+    };
+    let path: PathBuf = selected
+        .into_path()
+        .map_err(|_| "Não foi possível abrir o arquivo selecionado.")?;
+    tauri::async_runtime::spawn_blocking(move || library.import_local_file(&path))
+        .await
+        .map_err(|_| "Não foi possível concluir a importação.")?
+        .map(public_import_result)
+        .map_err(sanitized_error)
+}
+
+#[tauri::command]
+pub async fn list_library_items(
+    library: State<'_, LibraryRuntime>,
+) -> Result<Vec<PublicLibraryItem>, String> {
+    let library = library.library()?;
+    tauri::async_runtime::spawn_blocking(move || library.list_items())
+        .await
+        .map_err(|_| "Não foi possível consultar a biblioteca.")?
+        .map(|items| items.into_iter().map(PublicLibraryItem::from).collect())
+        .map_err(sanitized_error)
+}
+
+fn public_import_result(result: ImportResult) -> PublicImportResult {
+    match result {
+        ImportResult::Imported { item } => PublicImportResult::Imported { item: item.into() },
+        ImportResult::AlreadyPresent { item } => {
+            PublicImportResult::AlreadyPresent { item: item.into() }
+        }
+    }
+}
+
+fn sanitized_error(error: LibraryError) -> String {
+    match error {
+        LibraryError::InUse => "A biblioteca está em uso por outra instância.".into(),
+        LibraryError::EmptyFile | LibraryError::InvalidMedia => {
+            "O arquivo não possui um formato GIF, WebP ou PNG confirmado.".into()
+        }
+        LibraryError::TooLarge => "O arquivo excede o limite de 25 MB.".into(),
+        LibraryError::SourceUnavailable => "Não foi possível abrir o arquivo selecionado.".into(),
+        LibraryError::Storage | LibraryError::Database => {
+            "Não foi possível concluir a importação da biblioteca.".into()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::library::{Availability, LibraryItem, MediaFormat, SourceKind};
+
+    fn item() -> LibraryItem {
+        LibraryItem {
+            id: "id".into(),
+            format: MediaFormat::Gif,
+            storage_key: "private.gif".into(),
+            byte_size: 7,
+            content_sha256: "a".repeat(64),
+            source_kind: SourceKind::LocalFile,
+            original_name: Some("reaction.gif".into()),
+            imported_at: 1,
+            availability: Availability::Available,
+        }
+    }
+
+    #[test]
+    fn public_contracts_hide_private_storage_fields() {
+        let value = serde_json::to_value(public_import_result(ImportResult::Imported {
+            item: item(),
+        }))
+        .unwrap();
+        assert_eq!(value["status"], "imported");
+        assert!(value["item"].get("storageKey").is_none());
+        assert!(value["item"].get("contentSha256").is_none());
+    }
+
+    #[test]
+    fn serializes_duplicate_and_cancelled_results() {
+        let duplicate = serde_json::to_value(public_import_result(ImportResult::AlreadyPresent {
+            item: item(),
+        }))
+        .unwrap();
+        assert_eq!(duplicate["status"], "alreadyPresent");
+        assert_eq!(
+            serde_json::to_value(PublicImportResult::Cancelled).unwrap()["status"],
+            "cancelled"
+        );
+    }
+}
