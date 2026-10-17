@@ -10,8 +10,8 @@ import {
   AccordionPanel,
   Button,
   FluentProvider,
-  Text,
   makeStyles,
+  tokens,
 } from "@fluentui/react-components";
 import { Dismiss20Regular } from "@fluentui/react-icons";
 import { MediaImport, useMediaImport } from "../features/media-import";
@@ -29,18 +29,24 @@ import { resolveTheme, useSystemDarkMode } from "./theme";
 import { useSearchWindowFocus } from "./use-search-window-focus";
 
 const useStyles = makeStyles({
+  provider: {
+    minHeight: "100%",
+    backgroundColor: tokens.colorNeutralBackground1,
+  },
   shell: {
     width: "min(100%, 620px)",
+    minHeight: "100%",
     margin: "0 auto",
-    padding: "20px",
+    padding: "16px",
     boxSizing: "border-box",
   },
   header: {
     display: "flex",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: "12px",
+    justifyContent: "flex-end",
+    marginBottom: "16px",
   },
+  headerActions: { display: "flex", gap: "4px" },
   tools: { marginTop: "20px" },
 });
 
@@ -66,7 +72,10 @@ export function App() {
   const close = () => hideMainWindow().catch(() => window.close());
 
   return (
-    <FluentProvider theme={resolveTheme(preferences.theme, systemDark)}>
+    <FluentProvider
+      className={styles.provider}
+      theme={resolveTheme(preferences.theme, systemDark)}
+    >
       <main
         className={styles.shell}
         onKeyDown={(event) => {
@@ -77,10 +86,7 @@ export function App() {
         }}
       >
         <header className={styles.header}>
-          <Text weight="semibold" size={500}>
-            GIFTray
-          </Text>
-          <div>
+          <div className={styles.headerActions}>
             <SettingsDialog
               preferences={preferences}
               onPreferencesChange={updatePreferences}

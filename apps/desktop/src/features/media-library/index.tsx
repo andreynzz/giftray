@@ -4,7 +4,7 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Badge, Button, MessageBar, MessageBarBody, Spinner, Text, makeStyles, shorthands, tokens } from "@fluentui/react-components";
-import { Add20Regular, ArrowClockwise20Regular, Document20Regular } from "@fluentui/react-icons";
+import { Add20Regular, ArrowClockwise20Regular, Dismiss20Regular, Document20Regular } from "@fluentui/react-icons";
 import { listLibraryItems, selectAndImportMedia, type LibraryItem } from "../../platform/tauri/library";
 import { importFailureMessage } from "./lib/library-feedback";
 import { formatByteSize, libraryItemLabel, sortLibraryItems } from "./lib/library-presentation";
@@ -13,8 +13,8 @@ const useStyles = makeStyles({
   section: { display: "grid", gap: "12px" },
   toolbar: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" },
   title: { display: "grid", gap: "2px" },
-  list: { display: "grid", gap: "8px", margin: 0, padding: 0, listStyleType: "none" },
-  item: { display: "flex", alignItems: "center", gap: "12px", minHeight: "56px", padding: "10px 12px", backgroundColor: tokens.colorNeutralBackground1, ...shorthands.border("1px", "solid", tokens.colorNeutralStroke2), ...shorthands.borderRadius(tokens.borderRadiusMedium) },
+  list: { display: "grid", gap: "4px", margin: 0, padding: 0, listStyleType: "none" },
+  item: { display: "flex", alignItems: "center", gap: "10px", minHeight: "48px", padding: "8px 10px", backgroundColor: tokens.colorNeutralBackground1, ...shorthands.border("1px", "solid", tokens.colorNeutralStroke2), ...shorthands.borderRadius(tokens.borderRadiusMedium) },
   itemIcon: { color: tokens.colorBrandForeground1, flexShrink: 0 },
   itemContent: { minWidth: 0, display: "grid", gap: "3px", flexGrow: 1 },
   itemName: { overflowX: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
@@ -24,7 +24,7 @@ const useStyles = makeStyles({
   feedback: { display: "block" },
 });
 
-type Feedback = { intent: "success" | "info"; message: string } | null;
+type Feedback = { intent: "success" | "info" | "error"; message: string } | null;
 
 interface MediaLibraryProps { importButtonRef?: RefObject<HTMLButtonElement | null>; }
 
@@ -62,6 +62,12 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    if (!feedback || feedback.intent === "error") return;
+    const timeout = window.setTimeout(() => setFeedback(null), 5000);
+    return () => window.clearTimeout(timeout);
+  }, [feedback]);
+
   const importMedia = async () => {
     if (isImportingRef.current) return;
     isImportingRef.current = true;
@@ -80,7 +86,7 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
         message: result.status === "imported" ? "Arquivo salvo na biblioteca." : "Esse arquivo já está na biblioteca.",
       });
     } catch (error: unknown) {
-      setFeedback({ intent: "info", message: importFailureMessage(error) });
+      setFeedback({ intent: "error", message: importFailureMessage(error) });
     } finally {
       isImportingRef.current = false;
       setImporting(false);
@@ -98,7 +104,10 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
       </Button>
     </div>
     {importing && <Text className={styles.feedback} role="status">Importando arquivo…</Text>}
-    {feedback && <Text className={styles.feedback} role="status">{feedback.message}</Text>}
+    {feedback && feedback.intent !== "error" && <Text className={styles.feedback} role="status">{feedback.message}</Text>}
+    {feedback?.intent === "error" && <MessageBar intent="error"><MessageBarBody>
+      {feedback.message} <Button appearance="transparent" size="small" icon={<Dismiss20Regular />} aria-label="Dispensar erro" onClick={() => setFeedback(null)} />
+    </MessageBarBody></MessageBar>}
     {state === "loading" && <div className={styles.loading}><Spinner label="Carregando biblioteca…" /></div>}
     {state === "error" && <MessageBar intent="error"><MessageBarBody>
       Não foi possível abrir sua biblioteca. <Button appearance="transparent" size="small" icon={<ArrowClockwise20Regular />} onClick={() => void loadItems()}>Tentar novamente</Button>
