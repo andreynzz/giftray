@@ -4,16 +4,20 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
+  Accordion,
+  AccordionHeader,
+  AccordionItem,
+  AccordionPanel,
   Button,
   FluentProvider,
   Text,
   makeStyles,
 } from "@fluentui/react-components";
 import { Dismiss20Regular } from "@fluentui/react-icons";
-import { GifSearch } from "../features/gif-search";
 import { MediaImport, useMediaImport } from "../features/media-import";
 import { InputDiagnostics } from "../features/input-diagnostics/InputDiagnostics";
 import { ClipboardOutput } from "../features/clipboard-output";
+import { MediaLibrary } from "../features/media-library";
 import {
   readPreferences,
   writePreferences,
@@ -37,6 +41,7 @@ const useStyles = makeStyles({
     justifyContent: "space-between",
     marginBottom: "12px",
   },
+  tools: { marginTop: "20px" },
 });
 
 export function App() {
@@ -44,11 +49,11 @@ export function App() {
   const [preferences, setPreferences] = useState<Preferences>(() =>
     readPreferences(),
   );
-  const inputRef = useRef<HTMLInputElement>(null);
+  const importButtonRef = useRef<HTMLButtonElement>(null);
   const initialShortcutRef = useRef(preferences.shortcut);
   const systemDark = useSystemDarkMode();
   const mediaImport = useMediaImport();
-  useSearchWindowFocus(inputRef);
+  useSearchWindowFocus(importButtonRef);
 
   useEffect(() => {
     updateGlobalShortcut(initialShortcutRef.current).catch(() => undefined);
@@ -88,15 +93,22 @@ export function App() {
             />
           </div>
         </header>
-        <GifSearch inputRef={inputRef} />
-        <InputDiagnostics onInput={mediaImport.receiveInput} />
-        <MediaImport
-          preview={mediaImport.preview}
-          onClear={mediaImport.clear}
-          onLoad={mediaImport.markLoaded}
-          onLoadError={mediaImport.markFailed}
-        />
-        <ClipboardOutput preview={mediaImport.preview} />
+        <MediaLibrary importButtonRef={importButtonRef} />
+        <Accordion collapsible className={styles.tools}>
+          <AccordionItem value="p0-tools">
+            <AccordionHeader>Ferramentas de teste da P0</AccordionHeader>
+            <AccordionPanel>
+              <InputDiagnostics onInput={mediaImport.receiveInput} />
+              <MediaImport
+                preview={mediaImport.preview}
+                onClear={mediaImport.clear}
+                onLoad={mediaImport.markLoaded}
+                onLoadError={mediaImport.markFailed}
+              />
+              <ClipboardOutput preview={mediaImport.preview} />
+            </AccordionPanel>
+          </AccordionItem>
+        </Accordion>
       </main>
     </FluentProvider>
   );
