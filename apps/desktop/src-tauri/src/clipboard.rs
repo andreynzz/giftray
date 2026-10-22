@@ -5,14 +5,18 @@
 //! Windows file clipboard support. CF_HDROP owns only the path list: retained
 //! cache files must outlive the clipboard operation and a receiving process.
 
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
-    fs,
+    fs::{self, File},
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::Mutex,
     time::{Duration, SystemTime},
 };
 use tauri::{AppHandle, Manager};
+
+use crate::library::LibraryCopySource;
 
 const MAX_MEDIA_BYTES: usize = 25 * 1024 * 1024;
 const CACHE_MAX_BYTES: u64 = 100 * 1024 * 1024;
@@ -102,6 +106,85 @@ where
         return Err("Não foi possível finalizar o arquivo temporário.".into());
     }
     Ok(path)
+}
+
+fn cache_file_from_reader<R: Read>(
+    directory: &Path,
+    file_name: &str,
+    expected_size: u64,
+    expected_sha256: &str,
+    mut source: R,
+) -> Result<PathBuf, String> {
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .ok_or("Formato de arquivo inválido.")?;
+    let unique = format!(
+        "giftray-{}-{}.{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_| "Relógio do sistema inválido.")?
+            .as_nanos(),
+        extension
+    );
+    let path = directory.join(unique);
+    let temporary = directory.join(format!(
+        ".{path_name}.part",
+        path_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("Formato de arquivo inválido.")?
+    ));
+    let result = (|| -> Result<(), String> {
+        let mut output = File::create(&temporary)
+            .map_err(|_| "Não foi possível gravar o arquivo temporário.")?;
+        let mut buffer = [0u8; 8192];
+        let mut prefix = Vec::with_capacity(12);
+        let mut total = 0usize;
+        let mut digest = Sha256::new();
+        loop {
+            let count = source
+                .read(&mut buffer)
+                .map_err(|_| "Não foi possível ler o arquivo da biblioteca.")?;
+            if count == 0 {
+                break;
+            }
+            total = total
+                .checked_add(count)
+                .ok_or("O arquivo excede o limite de 25 MB.")?;
+            if total > MAX_MEDIA_BYTES {
+                return Err("O arquivo excede o limite de 25 MB.".into());
+            }
+            if total as u64 > expected_size {
+                return Err("O arquivo da biblioteca foi alterado durante a cópia.".into());
+            }
+            if prefix.len() < 12 {
+                prefix.extend_from_slice(&buffer[..count.min(12 - prefix.len())]);
+            }
+            output
+                .write_all(&buffer[..count])
+                .map_err(|_| "Não foi possível gravar o arquivo temporário.")?;
+            digest.update(&buffer[..count]);
+        }
+        if total == 0
+            || total as u64 != expected_size
+            || !valid_media(file_name, &prefix)
+            || format!("{:x}", digest.finalize()) != expected_sha256
+        {
+            return Err("O arquivo não possui um formato GIF, WebP ou PNG confirmado.".into());
+        }
+        output
+            .sync_all()
+            .map_err(|_| "Não foi possível gravar o arquivo temporário.")?;
+        fs::rename(&temporary, &path)
+            .map_err(|_| "Não foi possível finalizar o arquivo temporário.")?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result.map(|()| path)
 }
 
 fn is_incomplete_cache_file(path: &Path) -> bool {
@@ -328,6 +411,32 @@ pub fn copy_media_file(app: AppHandle, file_name: String, bytes: Vec<u8>) -> Res
     publish_cached_file(&path, set_hdrop)
 }
 
+pub(crate) fn copy_library_file(app: AppHandle, source: LibraryCopySource) -> Result<(), String> {
+    let metadata =
+        fs::metadata(&source.path).map_err(|_| "O arquivo da biblioteca não está disponível.")?;
+    if !metadata.is_file() || metadata.len() != source.byte_size || metadata.len() == 0 {
+        return Err("O arquivo da biblioteca não está disponível.".into());
+    }
+    let directory = cache_directory(&app)?;
+    let _lock = CACHE_LOCK
+        .lock()
+        .map_err(|_| "Não foi possível acessar o cache temporário com segurança.")?;
+    let protected = protected_clipboard_paths(&directory)?;
+    if !reserve_cache_space(&directory, &protected, source.byte_size as usize) {
+        return Err("Não há espaço seguro disponível no cache temporário.".into());
+    }
+    let file =
+        File::open(&source.path).map_err(|_| "O arquivo da biblioteca não está disponível.")?;
+    let path = cache_file_from_reader(
+        &directory,
+        &source.file_name,
+        source.byte_size,
+        &source.content_sha256,
+        file,
+    )?;
+    publish_cached_file(&path, set_hdrop)
+}
+
 #[tauri::command]
 pub async fn copy_remote_media_file(app: AppHandle, url: String) -> Result<(), String> {
     let bytes = crate::remote_media::download(&url).await?;
@@ -362,6 +471,7 @@ fn cleanup_cache_directory_with_limit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     fn test_cache_directory(name: &str) -> PathBuf {
         let directory = std::env::temp_dir().join(format!(
@@ -374,6 +484,10 @@ mod tests {
         ));
         fs::create_dir_all(&directory).unwrap();
         directory
+    }
+
+    fn digest(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
     }
 
     #[test]
@@ -459,6 +573,85 @@ mod tests {
         assert!(result.is_err());
         assert!(existing.exists());
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn streams_supported_library_media_to_cache_preserving_bytes() {
+        let directory = test_cache_directory("library-stream");
+        for (name, bytes) in [
+            ("a.gif", b"GIF89a gif".as_slice()),
+            ("b.webp", b"RIFFxxxxWEBP webp".as_slice()),
+            ("c.png", b"\x89PNG\r\n\x1a\n png".as_slice()),
+        ] {
+            let path = cache_file_from_reader(
+                &directory,
+                name,
+                bytes.len() as u64,
+                &digest(bytes),
+                Cursor::new(bytes),
+            )
+            .unwrap();
+            assert_eq!(fs::read(path).unwrap(), bytes);
+        }
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn rejects_changed_or_oversized_library_streams_without_publishing_cache_files() {
+        let directory = test_cache_directory("library-stream-rejection");
+        assert!(cache_file_from_reader(
+            &directory,
+            "a.gif",
+            3,
+            &digest(b"GIF89a data"),
+            Cursor::new(b"GIF89a data"),
+        )
+        .is_err());
+        assert!(cache_file_from_reader(
+            &directory,
+            "changed.gif",
+            b"GIF89a same".len() as u64,
+            &digest(b"GIF89a same"),
+            Cursor::new(b"GIF89a swap"),
+        )
+        .is_err());
+        assert!(cache_file_from_reader(
+            &directory,
+            "large.gif",
+            (MAX_MEDIA_BYTES + 1) as u64,
+            &digest(&vec![b'x'; MAX_MEDIA_BYTES + 1]),
+            Cursor::new(vec![b'x'; MAX_MEDIA_BYTES + 1]),
+        )
+        .is_err());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn library_stream_read_failure_removes_the_incomplete_cache_file() {
+        struct FailingReader(bool);
+        impl Read for FailingReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if self.0 {
+                    return Err(std::io::Error::other("simulated read failure"));
+                }
+                self.0 = true;
+                buffer[..6].copy_from_slice(b"GIF89a");
+                Ok(6)
+            }
+        }
+
+        let directory = test_cache_directory("library-stream-failure");
+        assert!(cache_file_from_reader(
+            &directory,
+            "a.gif",
+            7,
+            &"a".repeat(64),
+            FailingReader(false),
+        )
+        .is_err());
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
         let _ = fs::remove_dir_all(directory);
     }
 

@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, it } from "vitest";
-import { importFailureMessage } from "./library-feedback";
+import { copyFailureMessage, importFailureMessage } from "./library-feedback";
 
 describe("importFailureMessage", () => {
   it("keeps expected boundary failures actionable without exposing details", () => {
@@ -16,5 +16,12 @@ describe("importFailureMessage", () => {
     expect(importFailureMessage(new Error("internal sqlite path"))).toBe(
       "Não foi possível concluir a importação. Tente novamente.",
     );
+  });
+});
+
+describe("copyFailureMessage", () => {
+  it("maps unavailable and unknown failures to accessible messages", () => {
+    expect(copyFailureMessage("Esse arquivo não está mais disponível na biblioteca.")).toContain("Atualize");
+    expect(copyFailureMessage("private cache path")).toBe("Não foi possível copiar o arquivo. Tente novamente.");
   });
 });

@@ -28,3 +28,17 @@ export function importFailureMessage(error: unknown): string {
 
   return "Não foi possível concluir a importação. Tente novamente.";
 }
+
+export function copyFailureMessage(error: unknown): string {
+  const detail = errorDetail(error);
+  if (detail.includes("não está mais disponível") || detail.includes("não foi encontrado")) {
+    return "Esse arquivo não está disponível na biblioteca. Atualize a lista e tente novamente.";
+  }
+  if (detail.includes("biblioteca está em uso")) {
+    return "A biblioteca está em uso por outra instância. Feche a outra instância e tente novamente.";
+  }
+  if (detail.includes("excede o limite de 25 MB")) {
+    return "Não foi possível copiar: o arquivo excede o limite de 25 MB.";
+  }
+  return "Não foi possível copiar o arquivo. Tente novamente.";
+}
