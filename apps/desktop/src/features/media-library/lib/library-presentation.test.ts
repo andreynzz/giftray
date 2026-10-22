@@ -26,7 +26,12 @@ describe("library presentation", () => {
   });
 
   it("only enables copying for available items", () => {
-    expect(canCopyLibraryItem(item(1, "available.gif"))).toBe(true);
-    expect(canCopyLibraryItem({ ...item(1, "missing.gif"), availability: "missing" })).toBe(false);
+    expect(canCopyLibraryItem(item(1, "available.gif"), null)).toBe(true);
+    expect(canCopyLibraryItem({ ...item(1, "missing.gif"), availability: "missing" }, null)).toBe(false);
+  });
+
+  it("disables every copy action while one item is being copied", () => {
+    expect(canCopyLibraryItem(item(1, "first.gif"), "1")).toBe(false);
+    expect(canCopyLibraryItem(item(2, "second.gif"), "1")).toBe(false);
   });
 });

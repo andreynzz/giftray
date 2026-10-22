@@ -33,11 +33,11 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [importing, setImporting] = useState(false);
-  const [copyingIds, setCopyingIds] = useState<Set<string>>(() => new Set());
+  const [copyingId, setCopyingId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const localImportButtonRef = useRef<HTMLButtonElement>(null);
   const isImportingRef = useRef(false);
-  const copyingIdsRef = useRef(new Set<string>());
+  const copyingIdRef = useRef<string | null>(null);
   const buttonRef = importButtonRef ?? localImportButtonRef;
 
   const loadItems = useCallback(async () => {
@@ -96,9 +96,9 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
   };
 
   const copyItem = async (item: LibraryItem) => {
-    if (!canCopyLibraryItem(item) || copyingIdsRef.current.has(item.id)) return;
-    copyingIdsRef.current.add(item.id);
-    setCopyingIds(new Set(copyingIdsRef.current));
+    if (!canCopyLibraryItem(item, copyingIdRef.current)) return;
+    copyingIdRef.current = item.id;
+    setCopyingId(item.id);
     setFeedback(null);
     try {
       await copyLibraryItem(item.id);
@@ -106,8 +106,8 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
     } catch (error: unknown) {
       setFeedback({ intent: "error", message: copyFailureMessage(error) });
     } finally {
-      copyingIdsRef.current.delete(item.id);
-      setCopyingIds(new Set(copyingIdsRef.current));
+      copyingIdRef.current = null;
+      setCopyingId(null);
     }
   };
 
@@ -122,6 +122,7 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
       </Button>
     </div>
     {importing && <Text className={styles.feedback} role="status">Importando arquivo…</Text>}
+    {copyingId && <Text className={styles.feedback} role="status">Copiando arquivo…</Text>}
     {feedback && feedback.intent !== "error" && <Text className={styles.feedback} role="status">{feedback.message}</Text>}
     {feedback?.intent === "error" && <MessageBar intent="error"><MessageBarBody>
       {feedback.message} <Button appearance="transparent" size="small" icon={<Dismiss20Regular />} aria-label="Dispensar erro" onClick={() => setFeedback(null)} />
@@ -146,10 +147,10 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
         <Button
           appearance="secondary"
           icon={<Copy20Regular />}
-          disabled={!canCopyLibraryItem(item) || copyingIds.has(item.id)}
+          disabled={!canCopyLibraryItem(item, copyingId)}
           onClick={() => void copyItem(item)}
         >
-          {copyingIds.has(item.id) ? "Copiando…" : "Copiar arquivo"}
+          {copyingId === item.id ? "Copiando…" : "Copiar arquivo"}
         </Button>
       </li>)}
     </ul>}

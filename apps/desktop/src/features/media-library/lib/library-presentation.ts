@@ -16,8 +16,8 @@ export function libraryItemLabel(item: LibraryItem): string {
   return item.originalName?.trim() || `Arquivo ${item.format.toUpperCase()}`;
 }
 
-export function canCopyLibraryItem(item: LibraryItem): boolean {
-  return item.availability === "available";
+export function canCopyLibraryItem(item: LibraryItem, copyingId: string | null): boolean {
+  return item.availability === "available" && copyingId === null;
 }
 
 export function sortLibraryItems(items: LibraryItem[]): LibraryItem[] {
