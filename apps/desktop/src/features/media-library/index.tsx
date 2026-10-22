@@ -4,10 +4,10 @@
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Badge, Button, MessageBar, MessageBarBody, Spinner, Text, makeStyles, shorthands, tokens } from "@fluentui/react-components";
-import { Add20Regular, ArrowClockwise20Regular, Dismiss20Regular, Document20Regular } from "@fluentui/react-icons";
-import { listLibraryItems, selectAndImportMedia, type LibraryItem } from "../../platform/tauri/library";
-import { importFailureMessage } from "./lib/library-feedback";
-import { formatByteSize, libraryItemLabel, sortLibraryItems } from "./lib/library-presentation";
+import { Add20Regular, ArrowClockwise20Regular, Copy20Regular, Dismiss20Regular, Document20Regular } from "@fluentui/react-icons";
+import { copyLibraryItem, listLibraryItems, selectAndImportMedia, type LibraryItem } from "../../platform/tauri/library";
+import { copyFailureMessage, importFailureMessage } from "./lib/library-feedback";
+import { canCopyLibraryItem, formatByteSize, libraryItemLabel, sortLibraryItems } from "./lib/library-presentation";
 
 const useStyles = makeStyles({
   section: { display: "grid", gap: "12px" },
@@ -33,9 +33,11 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [importing, setImporting] = useState(false);
+  const [copyingIds, setCopyingIds] = useState<Set<string>>(() => new Set());
   const [feedback, setFeedback] = useState<Feedback>(null);
   const localImportButtonRef = useRef<HTMLButtonElement>(null);
   const isImportingRef = useRef(false);
+  const copyingIdsRef = useRef(new Set<string>());
   const buttonRef = importButtonRef ?? localImportButtonRef;
 
   const loadItems = useCallback(async () => {
@@ -93,6 +95,22 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
     }
   };
 
+  const copyItem = async (item: LibraryItem) => {
+    if (!canCopyLibraryItem(item) || copyingIdsRef.current.has(item.id)) return;
+    copyingIdsRef.current.add(item.id);
+    setCopyingIds(new Set(copyingIdsRef.current));
+    setFeedback(null);
+    try {
+      await copyLibraryItem(item.id);
+      setFeedback({ intent: "success", message: "Arquivo copiado. Cole com Ctrl+V." });
+    } catch (error: unknown) {
+      setFeedback({ intent: "error", message: copyFailureMessage(error) });
+    } finally {
+      copyingIdsRef.current.delete(item.id);
+      setCopyingIds(new Set(copyingIdsRef.current));
+    }
+  };
+
   return <section className={styles.section} aria-labelledby="library-title">
     <div className={styles.toolbar}>
       <div className={styles.title}>
@@ -125,6 +143,14 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
             {item.availability === "missing" && <Badge color="warning">Arquivo indisponível</Badge>}
           </div>
         </div>
+        <Button
+          appearance="secondary"
+          icon={<Copy20Regular />}
+          disabled={!canCopyLibraryItem(item) || copyingIds.has(item.id)}
+          onClick={() => void copyItem(item)}
+        >
+          {copyingIds.has(item.id) ? "Copiando…" : "Copiar arquivo"}
+        </Button>
       </li>)}
     </ul>}
   </section>;

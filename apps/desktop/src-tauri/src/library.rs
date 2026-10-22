@@ -154,12 +154,24 @@ pub enum ImportResult {
 #[derive(Debug, PartialEq, Eq)]
 pub enum LibraryError {
     InUse,
+    InvalidId,
+    NotFound,
+    Missing,
     EmptyFile,
     TooLarge,
     InvalidMedia,
     SourceUnavailable,
     Storage,
     Database,
+}
+
+/// Native-only resolved source for a clipboard-cache copy.
+#[derive(Debug)]
+pub(crate) struct LibraryCopySource {
+    pub(crate) path: PathBuf,
+    pub(crate) file_name: String,
+    pub(crate) byte_size: u64,
+    pub(crate) content_sha256: String,
 }
 
 /// Directory and database handle for the permanent local library.
@@ -232,6 +244,37 @@ impl Library {
         let connection = self.open_connection()?;
         migrate(&connection)?;
         query_item(&connection, "WHERE content_sha256 = ?1", params![sha256])
+    }
+
+    pub(crate) fn resolve_copy_source(&self, id: &str) -> Result<LibraryCopySource, LibraryError> {
+        if Uuid::parse_str(id).is_err() {
+            return Err(LibraryError::InvalidId);
+        }
+        let _operation = self.operation_lock()?;
+        let connection = self.open_connection()?;
+        migrate(&connection)?;
+        let item =
+            query_item(&connection, "WHERE id = ?1", params![id])?.ok_or(LibraryError::NotFound)?;
+        if item.availability != Availability::Available {
+            return Err(LibraryError::Missing);
+        }
+        if !safe_storage_key(&item.id, &item.storage_key) {
+            return Err(LibraryError::Storage);
+        }
+        let path = self.media_directory().join(&item.storage_key);
+        let metadata = fs::metadata(&path).map_err(|_| LibraryError::Missing)?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_MEDIA_BYTES {
+            return Err(LibraryError::Missing);
+        }
+        if metadata.len() != item.byte_size || format_from_file(&path)? != item.format {
+            return Err(LibraryError::InvalidMedia);
+        }
+        Ok(LibraryCopySource {
+            path,
+            file_name: item.storage_key,
+            byte_size: item.byte_size,
+            content_sha256: item.content_sha256,
+        })
     }
 
     fn import_local_file_with<Copy, Publish>(
@@ -448,6 +491,13 @@ fn copy_to_part(
     Ok((format, total, format!("{:x}", digest.finalize())))
 }
 
+fn format_from_file(path: &Path) -> Result<MediaFormat, LibraryError> {
+    let mut file = File::open(path).map_err(|_| LibraryError::Missing)?;
+    let mut prefix = [0u8; 12];
+    let count = file.read(&mut prefix).map_err(|_| LibraryError::Missing)?;
+    format_from_signature(&prefix[..count]).ok_or(LibraryError::InvalidMedia)
+}
+
 fn publish_part(part: &Path, final_path: &Path) -> Result<(), LibraryError> {
     fs::rename(part, final_path).map_err(|_| LibraryError::Storage)
 }
@@ -642,6 +692,78 @@ mod tests {
             library.import_local_file(&large).unwrap_err(),
             LibraryError::TooLarge
         );
+        drop(library);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resolves_copy_source_only_for_a_valid_available_controlled_item() {
+        let root = temp_root("copy-source");
+        let library = Library::initialize(&root).unwrap();
+        let input = source(&root, "reaction.gif", b"GIF89a bytes");
+        let item = imported(library.import_local_file(&input).unwrap());
+
+        let resolved = library.resolve_copy_source(&item.id).unwrap();
+        assert_eq!(resolved.file_name, item.storage_key);
+        assert_eq!(fs::read(resolved.path).unwrap(), b"GIF89a bytes");
+        assert_eq!(
+            library.resolve_copy_source("not-a-uuid").unwrap_err(),
+            LibraryError::InvalidId
+        );
+        assert_eq!(
+            library
+                .resolve_copy_source(&Uuid::new_v4().to_string())
+                .unwrap_err(),
+            LibraryError::NotFound
+        );
+
+        let connection = library.open_connection().unwrap();
+        connection
+            .execute(
+                "UPDATE library_items SET availability = 'missing' WHERE id = ?1",
+                params![item.id],
+            )
+            .unwrap();
+        drop(connection);
+        assert_eq!(
+            library.resolve_copy_source(&item.id).unwrap_err(),
+            LibraryError::Missing
+        );
+
+        fs::remove_file(library.media_directory().join(&item.storage_key)).unwrap();
+        assert_eq!(
+            library.resolve_copy_source(&item.id).unwrap_err(),
+            LibraryError::Missing
+        );
+        drop(library);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_copy_source_with_changed_metadata_or_signature() {
+        let root = temp_root("copy-source-integrity");
+        let library = Library::initialize(&root).unwrap();
+        let input = source(&root, "reaction.gif", b"GIF89a bytes");
+        let item = imported(library.import_local_file(&input).unwrap());
+        let path = library.media_directory().join(&item.storage_key);
+        fs::write(&path, b"not media!!!").unwrap();
+        assert_eq!(
+            library.resolve_copy_source(&item.id).unwrap_err(),
+            LibraryError::InvalidMedia
+        );
+
+        let connection = library.open_connection().unwrap();
+        connection
+            .execute(
+                "UPDATE library_items SET storage_key = 'outside.gif' WHERE id = ?1",
+                params![item.id],
+            )
+            .unwrap();
+        assert_eq!(
+            library.resolve_copy_source(&item.id).unwrap_err(),
+            LibraryError::Storage
+        );
+        drop(connection);
         drop(library);
         fs::remove_dir_all(root).unwrap();
     }

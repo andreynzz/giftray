@@ -59,7 +59,8 @@ pub fn run() {
             clipboard::copy_media_file,
             clipboard::copy_remote_media_file,
             library_commands::select_and_import_media,
-            library_commands::list_library_items
+            library_commands::list_library_items,
+            library_commands::copy_library_item
         ])
         .run(tauri::generate_context!())
         .expect("error while running GIFTray");

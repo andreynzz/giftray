@@ -31,3 +31,8 @@ export function selectAndImportMedia(): Promise<ImportResult> {
 export function listLibraryItems(): Promise<LibraryItem[]> {
   return invoke("list_library_items");
 }
+
+/** Sends only the opaque persistent-item UUID across IPC. */
+export function copyLibraryItem(id: string): Promise<void> {
+  return invoke("copy_library_item", { id });
+}

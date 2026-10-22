@@ -324,3 +324,7 @@ Os testes deste incremento usam diretórios temporários isolados para esquema v
 ## 15. Estabilização de exclusividade entre instâncias
 
 O handle exclusivo de `library.lock` pertence à `Library` durante toda a vida da instância, compartilhado entre clones por `Arc`. O mutex associado à `Library` continua serializando operações locais, mas não reabre o lock do sistema operacional. Assim, uma segunda instância falha com `InUse` antes de abrir SQLite ou executar recovery; após o encerramento normal ou uma queda do primeiro processo, o sistema operacional libera o handle e uma nova inicialização pode recuperar a biblioteca. O teste de processos separados verifica a recusa, a preservação de `.part` e do SQLite e a reabertura posterior em diretório temporário.
+
+## 16. Cópia de item persistido por ID
+
+`copy_library_item` recebe somente o UUID opaco pelo IPC. O backend valida o ID, o estado `available`, a storage key interna, tamanho, assinatura e SHA-256 do arquivo antes de criar uma cópia limitada no cache `clipboard-output`. A publicação CF_HDROP continua apontando apenas para essa cópia temporária, reutilizando o limite, a retenção e a proteção do arquivo ativo já existentes. Caminhos, hashes, storage keys e bytes não retornam à WebView. Falhas de leitura, cache ou publicação não modificam o item permanente; testes automatizados cobrem a resolução, os formatos aceitos, a cópia em fluxo e a limpeza de temporários.

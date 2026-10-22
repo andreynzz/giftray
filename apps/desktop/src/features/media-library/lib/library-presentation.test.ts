@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { LibraryItem } from "../../../platform/tauri/library";
-import { formatByteSize, libraryItemLabel, sortLibraryItems } from "./library-presentation";
+import { canCopyLibraryItem, formatByteSize, libraryItemLabel, sortLibraryItems } from "./library-presentation";
 
 const item = (importedAt: number, originalName: string | null): LibraryItem => ({
   id: `${importedAt}`, format: "gif", byteSize: 1024, sourceKind: "local_file",
@@ -23,5 +23,10 @@ describe("library presentation", () => {
     expect(sortLibraryItems([item(1, "old.gif"), item(2, "new.gif")])).toEqual([
       item(2, "new.gif"), item(1, "old.gif"),
     ]);
+  });
+
+  it("only enables copying for available items", () => {
+    expect(canCopyLibraryItem(item(1, "available.gif"))).toBe(true);
+    expect(canCopyLibraryItem({ ...item(1, "missing.gif"), availability: "missing" })).toBe(false);
   });
 });

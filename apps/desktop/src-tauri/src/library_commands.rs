@@ -71,6 +71,23 @@ pub async fn list_library_items(
         .map_err(sanitized_error)
 }
 
+/// Copies one persistent item by opaque ID. Paths and bytes stay native-only.
+#[tauri::command]
+pub async fn copy_library_item(
+    app: AppHandle,
+    library: State<'_, LibraryRuntime>,
+    id: String,
+) -> Result<(), String> {
+    let library = library.library()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = library.resolve_copy_source(&id)?;
+        crate::clipboard::copy_library_file(app, source).map_err(|_| LibraryError::Storage)
+    })
+    .await
+    .map_err(|_| "Não foi possível copiar o arquivo da biblioteca.")?
+    .map_err(sanitized_copy_error)
+}
+
 fn public_import_result(result: ImportResult) -> PublicImportResult {
     match result {
         ImportResult::Imported { item } => PublicImportResult::Imported { item: item.into() },
@@ -83,6 +100,9 @@ fn public_import_result(result: ImportResult) -> PublicImportResult {
 fn sanitized_error(error: LibraryError) -> String {
     match error {
         LibraryError::InUse => "A biblioteca está em uso por outra instância.".into(),
+        LibraryError::InvalidId | LibraryError::NotFound | LibraryError::Missing => {
+            "O arquivo solicitado não está disponível na biblioteca.".into()
+        }
         LibraryError::EmptyFile | LibraryError::InvalidMedia => {
             "O arquivo não possui um formato GIF, WebP ou PNG confirmado.".into()
         }
@@ -91,6 +111,24 @@ fn sanitized_error(error: LibraryError) -> String {
         LibraryError::Storage | LibraryError::Database => {
             "Não foi possível concluir a importação da biblioteca.".into()
         }
+    }
+}
+
+fn sanitized_copy_error(error: LibraryError) -> String {
+    match error {
+        LibraryError::InUse => "A biblioteca está em uso por outra instância.".into(),
+        LibraryError::InvalidId | LibraryError::NotFound => {
+            "O arquivo solicitado não foi encontrado na biblioteca.".into()
+        }
+        LibraryError::Missing => "Esse arquivo não está mais disponível na biblioteca.".into(),
+        LibraryError::TooLarge => "O arquivo excede o limite de 25 MB.".into(),
+        LibraryError::InvalidMedia => {
+            "O arquivo não possui um formato GIF, WebP ou PNG confirmado.".into()
+        }
+        LibraryError::EmptyFile
+        | LibraryError::SourceUnavailable
+        | LibraryError::Storage
+        | LibraryError::Database => "Não foi possível copiar o arquivo da biblioteca.".into(),
     }
 }
 

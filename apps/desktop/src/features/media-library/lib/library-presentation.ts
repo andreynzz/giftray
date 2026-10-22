@@ -16,6 +16,10 @@ export function libraryItemLabel(item: LibraryItem): string {
   return item.originalName?.trim() || `Arquivo ${item.format.toUpperCase()}`;
 }
 
+export function canCopyLibraryItem(item: LibraryItem): boolean {
+  return item.availability === "available";
+}
+
 export function sortLibraryItems(items: LibraryItem[]): LibraryItem[] {
   return [...items].sort((left, right) => right.importedAt - left.importedAt);
 }
