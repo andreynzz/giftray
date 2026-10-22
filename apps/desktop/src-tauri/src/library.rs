@@ -14,7 +14,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -28,7 +28,6 @@ const LIBRARY_DIRECTORY: &str = "library";
 const MEDIA_DIRECTORY: &str = "media";
 const DATABASE_FILE: &str = "library.sqlite3";
 const LOCK_FILE: &str = "library.lock";
-static IN_PROCESS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaFormat {
@@ -167,15 +166,28 @@ pub enum LibraryError {
 #[derive(Debug, Clone)]
 pub struct Library {
     root: PathBuf,
+    // This handle is intentionally shared by clones. The operating system
+    // releases it on process exit, while the last in-process clone releases it
+    // during normal shutdown.
+    _instance_lock: Arc<File>,
+    operation_mutex: Arc<Mutex<()>>,
 }
 
 impl Library {
     /// Opens and recovers `<app_local_data_dir>/library`. This is native-only.
     pub fn initialize(app_local_data_dir: &Path) -> Result<Self, LibraryError> {
+        let root = app_local_data_dir.join(LIBRARY_DIRECTORY);
+        let media_directory = root.join(MEDIA_DIRECTORY);
+        fs::create_dir_all(&media_directory).map_err(|_| LibraryError::Storage)?;
+        // Acquire the process-wide lock before opening SQLite or running recovery.
+        // A competing process must leave both the database and media tree untouched.
+        let instance_lock =
+            open_library_lock(&root.join(LOCK_FILE)).map_err(|_| LibraryError::InUse)?;
         let library = Self {
-            root: app_local_data_dir.join(LIBRARY_DIRECTORY),
+            root,
+            _instance_lock: Arc::new(instance_lock),
+            operation_mutex: Arc::new(Mutex::new(())),
         };
-        fs::create_dir_all(library.media_directory()).map_err(|_| LibraryError::Storage)?;
         {
             let _operation = library.operation_lock()?;
             let connection = library.open_connection()?;
@@ -295,17 +307,12 @@ impl Library {
     }
 
     fn operation_lock(&self) -> Result<OperationLock<'_>, LibraryError> {
-        let in_process = IN_PROCESS_LOCK
-            .get_or_init(|| Mutex::new(()))
+        let in_process = self
+            .operation_mutex
             .lock()
             .map_err(|_| LibraryError::InUse)?;
-        let path = self.root.join(LOCK_FILE);
-        // The parent directory and lock file are created during initialization;
-        // an open failure here is therefore treated as an occupied library.
-        let file = open_library_lock(&path).map_err(|_| LibraryError::InUse)?;
         Ok(OperationLock {
             _in_process: in_process,
-            _file: file,
         })
     }
 
@@ -352,7 +359,6 @@ impl Library {
 
 struct OperationLock<'a> {
     _in_process: std::sync::MutexGuard<'a, ()>,
-    _file: File,
 }
 
 #[cfg(windows)]
@@ -559,7 +565,9 @@ mod tests {
         let root = temp_root("migration");
         let library = Library::initialize(&root).unwrap();
         assert!(library.list_items().unwrap().is_empty());
-        assert!(Library::initialize(&root).is_ok());
+        drop(library);
+        let reopened = Library::initialize(&root).unwrap();
+        drop(reopened);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -586,6 +594,7 @@ mod tests {
                 bytes
             );
         }
+        drop(library);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -605,6 +614,7 @@ mod tests {
             _ => panic!("expected duplicate"),
         }
         assert_eq!(library.get_item(&item.id).unwrap(), Some(item));
+        drop(library);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -632,6 +642,7 @@ mod tests {
             library.import_local_file(&large).unwrap_err(),
             LibraryError::TooLarge
         );
+        drop(library);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -660,6 +671,7 @@ mod tests {
             LibraryError::Storage
         );
         assert_eq!(fs::read_dir(library.media_directory()).unwrap().count(), 0);
+        drop(library);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -680,6 +692,7 @@ mod tests {
         fs::write(&orphan, b"GIF89a orphan").unwrap();
         let unknown = library.media_directory().join("foreign.part");
         fs::write(&unknown, b"keep").unwrap();
+        drop(library);
         let recovered = Library::initialize(&root).unwrap();
         assert!(!part.exists());
         assert!(orphan.exists());
@@ -688,6 +701,7 @@ mod tests {
             recovered.get_item(&item.id).unwrap().unwrap().availability,
             Availability::Missing
         );
+        drop(recovered);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -710,32 +724,49 @@ mod tests {
             pair[0].imported_at > pair[1].imported_at
                 || (pair[0].imported_at == pair[1].imported_at && pair[0].id <= pair[1].id)
         }));
+        drop(library);
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn lock_is_exclusive_between_processes() {
         if let Some(root) = std::env::var_os("GIFTRAY_LIBRARY_LOCK_HELPER") {
+            let root = PathBuf::from(root);
+            let part = PathBuf::from(std::env::var_os("GIFTRAY_LIBRARY_LOCK_PART").unwrap());
+            let database = root.join(LIBRARY_DIRECTORY).join(DATABASE_FILE);
+            let database_before = fs::read(&database).unwrap();
             assert_eq!(
                 Library::initialize(Path::new(&root)).unwrap_err(),
                 LibraryError::InUse
             );
+            assert_eq!(fs::read(part).unwrap(), b"must-survive");
+            assert_eq!(fs::read(database).unwrap(), database_before);
             return;
         }
 
         let root = temp_root("process-lock");
         let library = Library::initialize(&root).unwrap();
-        let held = library.operation_lock().unwrap();
+        let part = library
+            .media_directory()
+            .join(format!(".{}.pending.part", Uuid::new_v4()));
+        fs::write(&part, b"must-survive").unwrap();
+        let retained_clone = library.clone();
+        drop(library);
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "library::tests::lock_is_exclusive_between_processes",
             ])
             .env("GIFTRAY_LIBRARY_LOCK_HELPER", &root)
+            .env("GIFTRAY_LIBRARY_LOCK_PART", &part)
             .status()
             .unwrap();
         assert!(status.success());
-        drop(held);
+        assert!(part.exists());
+        drop(retained_clone);
+        let reopened = Library::initialize(&root).unwrap();
+        assert!(!part.exists());
+        drop(reopened);
         fs::remove_dir_all(root).unwrap();
     }
 }
