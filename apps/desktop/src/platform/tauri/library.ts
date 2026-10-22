@@ -36,3 +36,14 @@ export function listLibraryItems(): Promise<LibraryItem[]> {
 export function copyLibraryItem(id: string): Promise<void> {
   return invoke("copy_library_item", { id });
 }
+
+const libraryMediaOrigin = "http://library-media.localhost";
+
+/** Restricted Tauri protocol URLs carry only an opaque item UUID. */
+export function libraryThumbnailUrl(id: string): string {
+  return `${libraryMediaOrigin}/thumbnail/${encodeURIComponent(id)}`;
+}
+
+export function libraryPreviewUrl(id: string): string {
+  return `${libraryMediaOrigin}/preview/${encodeURIComponent(id)}`;
+}

@@ -172,6 +172,12 @@ pub(crate) struct LibraryCopySource {
     pub(crate) file_name: String,
     pub(crate) byte_size: u64,
     pub(crate) content_sha256: String,
+    pub(crate) format: MediaFormat,
+}
+
+pub(crate) struct LibraryMedia {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) format: MediaFormat,
 }
 
 /// Directory and database handle for the permanent local library.
@@ -274,6 +280,21 @@ impl Library {
             file_name: item.storage_key,
             byte_size: item.byte_size,
             content_sha256: item.content_sha256,
+            format: item.format,
+        })
+    }
+
+    pub(crate) fn read_media_for_preview(&self, id: &str) -> Result<LibraryMedia, LibraryError> {
+        let source = self.resolve_copy_source(id)?;
+        let bytes = fs::read(&source.path).map_err(|_| LibraryError::Missing)?;
+        if bytes.len() as u64 != source.byte_size
+            || format!("{:x}", Sha256::digest(&bytes)) != source.content_sha256
+        {
+            return Err(LibraryError::InvalidMedia);
+        }
+        Ok(LibraryMedia {
+            bytes,
+            format: source.format,
         })
     }
 

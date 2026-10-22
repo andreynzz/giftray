@@ -20,6 +20,10 @@ export function canCopyLibraryItem(item: LibraryItem, copyingId: string | null):
   return item.availability === "available" && copyingId === null;
 }
 
+export function canPreviewLibraryItem(item: LibraryItem, reducedMotion: boolean): boolean {
+  return item.availability === "available" && !reducedMotion;
+}
+
 export function sortLibraryItems(items: LibraryItem[]): LibraryItem[] {
   return [...items].sort((left, right) => right.importedAt - left.importedAt);
 }

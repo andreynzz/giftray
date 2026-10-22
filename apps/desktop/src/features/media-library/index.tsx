@@ -5,16 +5,20 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Badge, Button, MessageBar, MessageBarBody, Spinner, Text, makeStyles, shorthands, tokens } from "@fluentui/react-components";
 import { Add20Regular, ArrowClockwise20Regular, Copy20Regular, Dismiss20Regular, Document20Regular } from "@fluentui/react-icons";
-import { copyLibraryItem, listLibraryItems, selectAndImportMedia, type LibraryItem } from "../../platform/tauri/library";
+import { copyLibraryItem, libraryPreviewUrl, libraryThumbnailUrl, listLibraryItems, selectAndImportMedia, type LibraryItem } from "../../platform/tauri/library";
 import { copyFailureMessage, importFailureMessage } from "./lib/library-feedback";
-import { canCopyLibraryItem, formatByteSize, libraryItemLabel, sortLibraryItems } from "./lib/library-presentation";
+import { canCopyLibraryItem, canPreviewLibraryItem, formatByteSize, libraryItemLabel, sortLibraryItems } from "./lib/library-presentation";
 
 const useStyles = makeStyles({
   section: { display: "grid", gap: "12px" },
   toolbar: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" },
   title: { display: "grid", gap: "2px" },
-  list: { display: "grid", gap: "4px", margin: 0, padding: 0, listStyleType: "none" },
-  item: { display: "flex", alignItems: "center", gap: "10px", minHeight: "48px", padding: "8px 10px", backgroundColor: tokens.colorNeutralBackground1, ...shorthands.border("1px", "solid", tokens.colorNeutralStroke2), ...shorthands.borderRadius(tokens.borderRadiusMedium) },
+  list: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: "8px", margin: 0, padding: 0, listStyleType: "none" },
+  item: { display: "grid", gap: "8px", minWidth: 0, padding: "8px", backgroundColor: tokens.colorNeutralBackground1, ...shorthands.border("1px", "solid", tokens.colorNeutralStroke2), ...shorthands.borderRadius(tokens.borderRadiusMedium) },
+  mediaButton: { display: "grid", gap: "6px", minWidth: 0, padding: 0, color: tokens.colorNeutralForeground1, backgroundColor: "transparent", border: 0, textAlign: "left", cursor: "pointer", ":focus-visible": { outlineStyle: "solid", outlineWidth: "2px", outlineColor: tokens.colorBrandStroke1, outlineOffset: "2px" }, ":disabled": { cursor: "default" } },
+  thumbnail: { display: "grid", placeItems: "center", width: "100%", aspectRatio: "3 / 2", overflow: "hidden", backgroundColor: tokens.colorNeutralBackground3, ...shorthands.borderRadius(tokens.borderRadiusSmall) },
+  thumbnailImage: { width: "100%", height: "100%", objectFit: "contain" },
+  thumbnailFallback: { color: tokens.colorNeutralForeground3 },
   itemIcon: { color: tokens.colorBrandForeground1, flexShrink: 0 },
   itemContent: { minWidth: 0, display: "grid", gap: "3px", flexGrow: 1 },
   itemName: { overflowX: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
@@ -22,11 +26,26 @@ const useStyles = makeStyles({
   empty: { display: "grid", justifyItems: "start", gap: "8px", padding: "20px 16px", backgroundColor: tokens.colorNeutralBackground2, ...shorthands.borderRadius(tokens.borderRadiusMedium) },
   loading: { display: "flex", alignItems: "center", minHeight: "80px" },
   feedback: { display: "block" },
+  preview: { display: "grid", gap: "8px", padding: "12px", backgroundColor: tokens.colorNeutralBackground2, ...shorthands.borderRadius(tokens.borderRadiusMedium) },
+  previewMedia: { display: "grid", placeItems: "center", minHeight: "180px", maxHeight: "300px", overflow: "hidden", backgroundColor: tokens.colorNeutralBackground3, ...shorthands.borderRadius(tokens.borderRadiusSmall) },
+  previewImage: { width: "100%", height: "100%", maxHeight: "300px", objectFit: "contain" },
 });
 
 type Feedback = { intent: "success" | "info" | "error"; message: string } | null;
 
 interface MediaLibraryProps { importButtonRef?: RefObject<HTMLButtonElement | null>; }
+
+function useReducedMotion(): boolean {
+  const [reducedMotion, setReducedMotion] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReducedMotion(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return reducedMotion;
+}
 
 export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
   const styles = useStyles();
@@ -34,11 +53,19 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [importing, setImporting] = useState(false);
   const [copyingId, setCopyingId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [thumbnailFailures, setThumbnailFailures] = useState<Set<string>>(() => new Set());
+  const [previewResult, setPreviewResult] = useState<{ id: string; state: "ready" | "error" } | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const localImportButtonRef = useRef<HTMLButtonElement>(null);
   const isImportingRef = useRef(false);
   const copyingIdRef = useRef<string | null>(null);
   const buttonRef = importButtonRef ?? localImportButtonRef;
+  const reducedMotion = useReducedMotion();
+  const selectedItem = items.find((item) => item.id === selectedId) ?? null;
+  const previewState = !selectedItem || !canPreviewLibraryItem(selectedItem, reducedMotion)
+    ? "idle"
+    : previewResult?.id === selectedItem.id ? previewResult.state : "loading";
 
   const loadItems = useCallback(async () => {
     setState("loading");
@@ -111,6 +138,16 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
     }
   };
 
+  const selectItem = (item: LibraryItem) => {
+    setSelectedId((current) => current === item.id ? null : item.id);
+    setPreviewResult(null);
+  };
+
+  const clearSelection = () => {
+    setSelectedId(null);
+    setPreviewResult(null);
+  };
+
   return <section className={styles.section} aria-labelledby="library-title">
     <div className={styles.toolbar}>
       <div className={styles.title}>
@@ -134,16 +171,59 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
     {state === "ready" && items.length === 0 && <div className={styles.empty}>
       <Text weight="semibold">Sua biblioteca está vazia</Text><Text size={200}>Importe seu primeiro GIF, WebP ou PNG.</Text>
     </div>}
-    {state === "ready" && items.length > 0 && <ul className={styles.list} aria-label="Arquivos salvos">
+    {selectedItem && <section className={styles.preview} aria-labelledby="preview-title">
+      <div className={styles.toolbar}>
+        <Text id="preview-title" weight="semibold">Prévia: {libraryItemLabel(selectedItem)}</Text>
+        <Button appearance="secondary" size="small" onClick={clearSelection}>Fechar prévia</Button>
+      </div>
+      {selectedItem.availability === "missing" && <Text role="status">Arquivo indisponível.</Text>}
+      {selectedItem.availability === "available" && reducedMotion && <>
+        <Text role="status">Prévia animada desativada pela preferência de movimento reduzido.</Text>
+        <div className={styles.previewMedia}>
+          {thumbnailFailures.has(selectedItem.id)
+            ? <Document20Regular className={styles.thumbnailFallback} aria-hidden="true" />
+            : <img className={styles.previewImage} src={libraryThumbnailUrl(selectedItem.id)} alt={`Miniatura estática de ${libraryItemLabel(selectedItem)}`} onError={() => setThumbnailFailures((current) => new Set(current).add(selectedItem.id))} />}
+        </div>
+      </>}
+      {selectedItem.availability === "available" && !reducedMotion && <div className={styles.previewMedia}>
+        {previewState === "loading" && <Spinner label="Carregando prévia…" />}
+        {previewState === "error" && <Text role="status">Não foi possível carregar a prévia.</Text>}
+        <img
+          key={selectedItem.id}
+          className={styles.previewImage}
+          src={libraryPreviewUrl(selectedItem.id)}
+          alt={`Prévia de ${libraryItemLabel(selectedItem)}`}
+          hidden={previewState === "error"}
+          onLoad={() => setPreviewResult({ id: selectedItem.id, state: "ready" })}
+          onError={() => setPreviewResult({ id: selectedItem.id, state: "error" })}
+        />
+      </div>}
+      <Button appearance="secondary" icon={<Copy20Regular />} disabled={!canCopyLibraryItem(selectedItem, copyingId)} onClick={() => void copyItem(selectedItem)}>
+        {copyingId === selectedItem.id ? "Copiando…" : "Copiar arquivo"}
+      </Button>
+    </section>}
+    {state === "ready" && items.length > 0 && <ul className={styles.list} aria-label="Arquivos salvos" onKeyDown={(event) => { if (event.key === "Escape") clearSelection(); }}>
       {items.map((item) => <li key={item.id} className={styles.item}>
-        <Document20Regular className={styles.itemIcon} aria-hidden="true" />
-        <div className={styles.itemContent}>
+        <button
+          type="button"
+          className={styles.mediaButton}
+          aria-pressed={selectedId === item.id}
+          aria-label={`Selecionar ${libraryItemLabel(item)}`}
+          onClick={() => selectItem(item)}
+        >
+          <div className={styles.thumbnail}>
+            {item.availability === "available" && !thumbnailFailures.has(item.id)
+              ? <img className={styles.thumbnailImage} src={libraryThumbnailUrl(item.id)} alt="" loading="lazy" onError={() => setThumbnailFailures((current) => new Set(current).add(item.id))} />
+              : <Document20Regular className={styles.thumbnailFallback} aria-hidden="true" />}
+          </div>
+          <div className={styles.itemContent}>
           <Text className={styles.itemName} weight="semibold" title={libraryItemLabel(item)}>{libraryItemLabel(item)}</Text>
           <div className={styles.metadata}>
             <Badge appearance="outline">{item.format.toUpperCase()}</Badge><Text size={200}>{formatByteSize(item.byteSize)}</Text>
             {item.availability === "missing" && <Badge color="warning">Arquivo indisponível</Badge>}
           </div>
-        </div>
+          </div>
+        </button>
         <Button
           appearance="secondary"
           icon={<Copy20Regular />}
