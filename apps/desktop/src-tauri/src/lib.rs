@@ -5,6 +5,7 @@
 mod clipboard;
 mod library;
 mod library_commands;
+mod library_media;
 mod remote_media;
 mod shortcuts;
 mod window;
@@ -15,6 +16,24 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 pub fn run() {
     let initial_shortcut = shortcuts::initial_shortcut();
     tauri::Builder::default()
+        .register_uri_scheme_protocol("library-media", |context, request| {
+            if request.method() != tauri::http::Method::GET {
+                return tauri::http::Response::builder()
+                    .status(tauri::http::StatusCode::NOT_FOUND)
+                    .body(Vec::new())
+                    .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()));
+            }
+            let runtime = context
+                .app_handle()
+                .state::<library_commands::LibraryRuntime>();
+            match runtime.library() {
+                Ok(library) => library_media::respond(&library, request.uri().path()),
+                Err(_) => tauri::http::Response::builder()
+                    .status(tauri::http::StatusCode::NOT_FOUND)
+                    .body(Vec::new())
+                    .unwrap_or_else(|_| tauri::http::Response::new(Vec::new())),
+            }
+        })
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(

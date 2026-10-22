@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { LibraryItem } from "../../../platform/tauri/library";
-import { canCopyLibraryItem, formatByteSize, libraryItemLabel, sortLibraryItems } from "./library-presentation";
+import { canCopyLibraryItem, canPreviewLibraryItem, formatByteSize, libraryItemLabel, sortLibraryItems } from "./library-presentation";
 
 const item = (importedAt: number, originalName: string | null): LibraryItem => ({
   id: `${importedAt}`, format: "gif", byteSize: 1024, sourceKind: "local_file",
@@ -33,5 +33,11 @@ describe("library presentation", () => {
   it("disables every copy action while one item is being copied", () => {
     expect(canCopyLibraryItem(item(1, "first.gif"), "1")).toBe(false);
     expect(canCopyLibraryItem(item(2, "second.gif"), "1")).toBe(false);
+  });
+
+  it("does not preview unavailable items or animate with reduced motion", () => {
+    expect(canPreviewLibraryItem(item(1, "available.gif"), false)).toBe(true);
+    expect(canPreviewLibraryItem(item(1, "available.gif"), true)).toBe(false);
+    expect(canPreviewLibraryItem({ ...item(1, "missing.gif"), availability: "missing" }, false)).toBe(false);
   });
 });

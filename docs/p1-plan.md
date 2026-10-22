@@ -328,3 +328,11 @@ O handle exclusivo de `library.lock` pertence à `Library` durante toda a vida d
 ## 16. Cópia de item persistido por ID
 
 `copy_library_item` recebe somente o UUID opaco pelo IPC. O backend valida o ID, o estado `available`, a storage key interna, tamanho, assinatura e SHA-256 do arquivo antes de criar uma cópia limitada no cache `clipboard-output`. A publicação CF_HDROP continua apontando apenas para essa cópia temporária, reutilizando o limite, a retenção e a proteção do arquivo ativo já existentes. Caminhos, hashes, storage keys e bytes não retornam à WebView. Falhas de leitura, cache ou publicação não modificam o item permanente; testes automatizados cobrem a resolução, os formatos aceitos, a cópia em fluxo e a limpeza de temporários.
+
+## 17. Biblioteca visual e prévia restrita
+
+A WebView identifica mídia persistida somente pelo UUID público. O protocolo Tauri privado `library-media` aceita exclusivamente as rotas `thumbnail/<uuid>` e `preview/<uuid>`; cada pedido resolve o item pela biblioteca nativa e repete a validação de disponibilidade, storage key controlada, tamanho, assinatura e digest antes de responder. Não há comando que aceite caminho, nem listagem do diretório, e a CSP libera somente a origem local desse protocolo para imagens.
+
+Miniaturas são PNGs estáticos gerados no backend a partir do primeiro quadro, com dimensão máxima de 240×160 e teto de alocação de 16 MiB. A prévia selecionada recebe os bytes originais e, portanto, permite que GIF e WebP animados sejam reproduzidos pelo WebView2 quando ele os suportar. Em movimento reduzido, a interface solicita somente a miniatura estática. Item `missing`, mídia alterada, falha de decodificação ou erro de carregamento apresentam fallback sem impedir a lista ou a ação já existente de copiar por UUID.
+
+Os testes nativos cobrem rotas inválidas, traversal, item ausente, resposta e MIME controlados, falha de decodificação e geração de miniatura. Os testes de apresentação cobrem disponibilidade e movimento reduzido. Ainda são necessários smoke tests no Windows para animação GIF/WebP no WebView2, `prefers-reduced-motion`, DPI, temas claro/escuro/alto contraste e navegação com leitor de tela.

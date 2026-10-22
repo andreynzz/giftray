@@ -172,6 +172,12 @@ pub(crate) struct LibraryCopySource {
     pub(crate) file_name: String,
     pub(crate) byte_size: u64,
     pub(crate) content_sha256: String,
+    pub(crate) format: MediaFormat,
+}
+
+pub(crate) struct LibraryMedia {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) format: MediaFormat,
 }
 
 /// Directory and database handle for the permanent local library.
@@ -261,9 +267,10 @@ impl Library {
         if !safe_storage_key(&item.id, &item.storage_key) {
             return Err(LibraryError::Storage);
         }
-        let path = self.media_directory().join(&item.storage_key);
+        let media_directory = self.media_directory();
+        let path = controlled_media_path(&media_directory, &item.storage_key)?;
         let metadata = fs::metadata(&path).map_err(|_| LibraryError::Missing)?;
-        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_MEDIA_BYTES {
+        if metadata.len() == 0 || metadata.len() > MAX_MEDIA_BYTES {
             return Err(LibraryError::Missing);
         }
         if metadata.len() != item.byte_size || format_from_file(&path)? != item.format {
@@ -274,6 +281,21 @@ impl Library {
             file_name: item.storage_key,
             byte_size: item.byte_size,
             content_sha256: item.content_sha256,
+            format: item.format,
+        })
+    }
+
+    pub(crate) fn read_media_for_preview(&self, id: &str) -> Result<LibraryMedia, LibraryError> {
+        let source = self.resolve_copy_source(id)?;
+        let bytes = fs::read(&source.path).map_err(|_| LibraryError::Missing)?;
+        if bytes.len() as u64 != source.byte_size
+            || format!("{:x}", Sha256::digest(&bytes)) != source.content_sha256
+        {
+            return Err(LibraryError::InvalidMedia);
+        }
+        Ok(LibraryMedia {
+            bytes,
+            format: source.format,
         })
     }
 
@@ -386,7 +408,7 @@ impl Library {
         for row in rows {
             let (id, storage_key) = row.map_err(|_| LibraryError::Database)?;
             if !safe_storage_key(&id, &storage_key)
-                || !self.media_directory().join(&storage_key).is_file()
+                || controlled_media_path(&self.media_directory(), &storage_key).is_err()
             {
                 transaction
                     .execute(
@@ -535,6 +557,44 @@ fn safe_storage_key(id: &str, key: &str) -> bool {
         && ["gif", "webp", "png"]
             .iter()
             .any(|extension| key == format!("{id}.{extension}"))
+}
+
+/// Resolves only a normal file directly below the native-owned media directory.
+/// Links and Windows reparse points are never a valid persistent media item.
+fn controlled_media_path(
+    media_directory: &Path,
+    storage_key: &str,
+) -> Result<PathBuf, LibraryError> {
+    let directory_metadata =
+        fs::symlink_metadata(media_directory).map_err(|_| LibraryError::Missing)?;
+    if !directory_metadata.file_type().is_dir() || is_reparse_point(&directory_metadata) {
+        return Err(LibraryError::Storage);
+    }
+
+    let candidate = media_directory.join(storage_key);
+    let metadata = fs::symlink_metadata(&candidate).map_err(|_| LibraryError::Missing)?;
+    if !metadata.file_type().is_file() || is_reparse_point(&metadata) {
+        return Err(LibraryError::Missing);
+    }
+
+    let directory = fs::canonicalize(media_directory).map_err(|_| LibraryError::Missing)?;
+    let path = fs::canonicalize(&candidate).map_err(|_| LibraryError::Missing)?;
+    if !path.starts_with(&directory) {
+        return Err(LibraryError::Missing);
+    }
+    Ok(path)
+}
+
+#[cfg(windows)]
+fn is_reparse_point(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    metadata.file_attributes() & 0x0400 != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(_metadata: &fs::Metadata) -> bool {
+    false
 }
 
 fn sanitized_name(source: &Path) -> Option<String> {
@@ -731,6 +791,36 @@ mod tests {
         );
 
         fs::remove_file(library.media_directory().join(&item.storage_key)).unwrap();
+        assert_eq!(
+            library.resolve_copy_source(&item.id).unwrap_err(),
+            LibraryError::Missing
+        );
+        drop(library);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_media_symlinks_that_target_outside_the_library() {
+        use std::os::windows::fs::symlink_file;
+
+        let root = temp_root("linked-media");
+        let library = Library::initialize(&root).unwrap();
+        let input = source(&root, "reaction.gif", b"GIF89a bytes");
+        let item = imported(library.import_local_file(&input).unwrap());
+        let outside = source(&root, "outside.gif", b"GIF89a other");
+        let media_path = library.media_directory().join(&item.storage_key);
+        fs::remove_file(&media_path).unwrap();
+        if let Err(error) = symlink_file(&outside, &media_path) {
+            if error.kind() == io::ErrorKind::PermissionDenied || error.raw_os_error() == Some(1314)
+            {
+                drop(library);
+                fs::remove_dir_all(root).unwrap();
+                return;
+            }
+            panic!("failed to create symlink: {error}");
+        }
+
         assert_eq!(
             library.resolve_copy_source(&item.id).unwrap_err(),
             LibraryError::Missing
