@@ -4,11 +4,12 @@
 
 import { describe, expect, it } from "vitest";
 import type { LibraryItem } from "../../../platform/tauri/library";
-import { canCopyLibraryItem, canPreviewLibraryItem, canStartRemoteImport, formatByteSize, libraryItemLabel, sortLibraryItems } from "./library-presentation";
+import { canCopyLibraryItem, canPreviewLibraryItem, canStartRemoteImport, filterLibraryItems, formatByteSize, libraryItemLabel, sortLibraryItems } from "./library-presentation";
 
 const item = (importedAt: number, originalName: string | null): LibraryItem => ({
   id: `${importedAt}`, format: "gif", byteSize: 1024, sourceKind: "local_file",
   originalName, importedAt, availability: "available",
+  displayName: null,
 });
 
 describe("library presentation", () => {
@@ -46,5 +47,18 @@ describe("library presentation", () => {
     expect(canStartRemoteImport("  ", false)).toBe(false);
     expect(canStartRemoteImport("https://cdn.example.test/reaction.gif", true)).toBe(false);
     expect(canStartRemoteImport("https://cdn.example.test/reaction.gif", false)).toBe(true);
+  });
+
+  it("filters names, formats and accents without changing an empty query", () => {
+    const items = [
+      { ...item(1, "café.gif"), displayName: "Reação rápida" },
+      item(2, "other.webp"),
+    ];
+    expect(filterLibraryItems(items, "")).toEqual(items);
+    expect(filterLibraryItems(items, "REACAO")).toEqual([items[0]]);
+    expect(filterLibraryItems(items, "CAFE")).toEqual([items[0]]);
+    expect(filterLibraryItems(items, "webp")).toEqual([items[1]]);
+    expect(filterLibraryItems(items, "ausente")).toEqual([]);
+    expect(libraryItemLabel(items[0])).toBe("Reação rápida");
   });
 });

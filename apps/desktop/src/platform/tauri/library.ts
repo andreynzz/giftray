@@ -15,6 +15,7 @@ export interface LibraryItem {
   byteSize: number;
   sourceKind: LibrarySourceKind;
   originalName: string | null;
+  displayName: string | null;
   importedAt: number;
   availability: LibraryAvailability;
 }
@@ -35,6 +36,11 @@ export function importRemoteMedia(url: string): Promise<Exclude<ImportResult, { 
 
 export function listLibraryItems(): Promise<LibraryItem[]> {
   return invoke("list_library_items");
+}
+
+/** Updates a public label only; the backend resolves and validates the UUID. */
+export function renameLibraryItem(id: string, displayName: string): Promise<LibraryItem> {
+  return invoke("rename_library_item", { id, displayName });
 }
 
 /** Sends only the opaque persistent-item UUID across IPC. */

@@ -5,9 +5,9 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Badge, Button, Input, MessageBar, MessageBarBody, Spinner, Text, makeStyles, shorthands, tokens } from "@fluentui/react-components";
 import { Add20Regular, ArrowClockwise20Regular, Copy20Regular, Dismiss20Regular, Document20Regular } from "@fluentui/react-icons";
-import { copyLibraryItem, importRemoteMedia, libraryPreviewUrl, libraryThumbnailUrl, listLibraryItems, selectAndImportMedia, type ImportResult, type LibraryItem } from "../../platform/tauri/library";
-import { copyFailureMessage, importFailureMessage } from "./lib/library-feedback";
-import { canCopyLibraryItem, canPreviewLibraryItem, canStartRemoteImport, formatByteSize, libraryItemLabel, sortLibraryItems } from "./lib/library-presentation";
+import { copyLibraryItem, importRemoteMedia, libraryPreviewUrl, libraryThumbnailUrl, listLibraryItems, renameLibraryItem, selectAndImportMedia, type ImportResult, type LibraryItem } from "../../platform/tauri/library";
+import { copyFailureMessage, importFailureMessage, renameFailureMessage } from "./lib/library-feedback";
+import { canCopyLibraryItem, canPreviewLibraryItem, canStartRemoteImport, filterLibraryItems, formatByteSize, libraryItemLabel, sortLibraryItems } from "./lib/library-presentation";
 
 const useStyles = makeStyles({
   section: { display: "grid", gap: "12px" },
@@ -28,6 +28,8 @@ const useStyles = makeStyles({
   feedback: { display: "block" },
   remoteImport: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "end" },
   remoteInput: { flexGrow: 1, minWidth: "180px" },
+  search: { width: "100%" },
+  renameActions: { display: "flex", gap: "6px", flexWrap: "wrap" },
   preview: { display: "grid", gap: "8px", padding: "12px", backgroundColor: tokens.colorNeutralBackground2, ...shorthands.borderRadius(tokens.borderRadiusMedium) },
   previewMedia: { display: "grid", placeItems: "center", minHeight: "180px", maxHeight: "300px", overflow: "hidden", backgroundColor: tokens.colorNeutralBackground3, ...shorthands.borderRadius(tokens.borderRadiusSmall) },
   previewImage: { width: "100%", height: "100%", maxHeight: "300px", objectFit: "contain" },
@@ -55,17 +57,25 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [importing, setImporting] = useState(false);
   const [remoteUrl, setRemoteUrl] = useState("");
+  const [query, setQuery] = useState("");
   const [copyingId, setCopyingId] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renaming, setRenaming] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [thumbnailFailures, setThumbnailFailures] = useState<Set<string>>(() => new Set());
   const [previewResult, setPreviewResult] = useState<{ id: string; state: "ready" | "error" } | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const localImportButtonRef = useRef<HTMLButtonElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const renameButtonRefs = useRef(new Map<string, HTMLElement>());
   const isImportingRef = useRef(false);
   const copyingIdRef = useRef<string | null>(null);
+  const isRenamingRef = useRef(false);
   const buttonRef = importButtonRef ?? localImportButtonRef;
   const reducedMotion = useReducedMotion();
   const selectedItem = items.find((item) => item.id === selectedId) ?? null;
+  const filteredItems = filterLibraryItems(items, query);
   const previewState = !selectedItem || !canPreviewLibraryItem(selectedItem, reducedMotion)
     ? "idle"
     : previewResult?.id === selectedItem.id ? previewResult.state : "loading";
@@ -162,6 +172,50 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
     }
   };
 
+  const restoreRenameFocus = (id: string) => {
+    window.requestAnimationFrame(() => {
+      const trigger = renameButtonRefs.current.get(id);
+      if (trigger?.isConnected) {
+        trigger.focus();
+      } else {
+        searchInputRef.current?.focus();
+      }
+    });
+  };
+
+  const beginRename = (item: LibraryItem) => {
+    if (renaming) return;
+    setRenamingId(item.id);
+    setRenameValue(item.displayName ?? item.originalName ?? "");
+  };
+
+  const cancelRename = (id: string) => {
+    if (renaming) return;
+    setRenamingId(null);
+    setRenameValue("");
+    restoreRenameFocus(id);
+  };
+
+  const saveRename = async (item: LibraryItem) => {
+    if (isRenamingRef.current) return;
+    isRenamingRef.current = true;
+    setRenaming(true);
+    setFeedback(null);
+    try {
+      const updated = await renameLibraryItem(item.id, renameValue);
+      setItems((current) => current.map((currentItem) => currentItem.id === updated.id ? updated : currentItem));
+      setFeedback({ intent: "success", message: updated.displayName ? "Nome atualizado." : "Nome personalizado removido." });
+      setRenamingId(null);
+      setRenameValue("");
+      restoreRenameFocus(updated.id);
+    } catch (error: unknown) {
+      setFeedback({ intent: "error", message: renameFailureMessage(error) });
+    } finally {
+      isRenamingRef.current = false;
+      setRenaming(false);
+    }
+  };
+
   const selectItem = (item: LibraryItem) => {
     setSelectedId((current) => current === item.id ? null : item.id);
     setPreviewResult(null);
@@ -186,6 +240,7 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
       <Input className={styles.remoteInput} type="url" value={remoteUrl} disabled={importing} onChange={(_, data) => setRemoteUrl(data.value)} placeholder="https://exemplo.com/midia.gif" aria-label="URL da mídia" />
       <Button appearance="secondary" type="submit" disabled={!canStartRemoteImport(remoteUrl, importing)}>Salvar URL</Button>
     </form>
+    <Input ref={searchInputRef} className={styles.search} value={query} onChange={(_, data) => setQuery(data.value)} placeholder="Buscar por nome ou formato" aria-label="Buscar na biblioteca" />
     {importing && <Text className={styles.feedback} role="status">Importando mídia…</Text>}
     {copyingId && <Text className={styles.feedback} role="status">Copiando arquivo…</Text>}
     {feedback && feedback.intent !== "error" && <Text className={styles.feedback} role="status">{feedback.message}</Text>}
@@ -230,8 +285,11 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
         {copyingId === selectedItem.id ? "Copiando…" : "Copiar arquivo"}
       </Button>
     </section>}
-    {state === "ready" && items.length > 0 && <ul className={styles.list} aria-label="Arquivos salvos" onKeyDown={(event) => { if (event.key === "Escape") clearSelection(); }}>
-      {items.map((item) => <li key={item.id} className={styles.item}>
+    {state === "ready" && items.length > 0 && filteredItems.length === 0 && <div className={styles.empty}>
+      <Text weight="semibold">Nenhum resultado</Text><Text size={200}>Tente outro nome ou formato.</Text>
+    </div>}
+    {state === "ready" && filteredItems.length > 0 && <ul className={styles.list} aria-label="Arquivos salvos" onKeyDown={(event) => { if (event.key === "Escape") clearSelection(); }}>
+      {filteredItems.map((item) => <li key={item.id} className={styles.item}>
         <button
           type="button"
           className={styles.mediaButton}
@@ -260,6 +318,13 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
         >
           {copyingId === item.id ? "Copiando…" : "Copiar arquivo"}
         </Button>
+        {renamingId === item.id
+          ? <form className={styles.renameActions} onSubmit={(event) => { event.preventDefault(); void saveRename(item); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelRename(item.id); } }}>
+              <Input autoFocus value={renameValue} disabled={renaming} onChange={(_, data) => setRenameValue(data.value)} aria-label={`Novo nome para ${libraryItemLabel(item)}`} />
+              <Button appearance="secondary" size="small" type="submit" disabled={renaming}>{renaming ? "Salvando…" : "Salvar"}</Button>
+              <Button appearance="secondary" size="small" type="button" disabled={renaming} onClick={() => cancelRename(item.id)}>Cancelar</Button>
+            </form>
+          : <Button ref={(element) => { if (element) renameButtonRefs.current.set(item.id, element); else renameButtonRefs.current.delete(item.id); }} appearance="secondary" size="small" disabled={renamingId !== null} onClick={() => beginRename(item)}>Renomear</Button>}
       </li>)}
     </ul>}
   </section>;

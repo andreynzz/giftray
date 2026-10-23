@@ -80,6 +80,7 @@ pub fn run() {
             library_commands::select_and_import_media,
             library_commands::import_remote_media,
             library_commands::list_library_items,
+            library_commands::rename_library_item,
             library_commands::copy_library_item
         ])
         .run(tauri::generate_context!())
