@@ -59,3 +59,15 @@ export function renameFailureMessage(error: unknown): string {
 
   return "Não foi possível renomear o arquivo. Tente novamente.";
 }
+
+/** Maps deletion failures without leaking storage or database details. */
+export function deleteFailureMessage(error: unknown): string {
+  const detail = errorDetail(error);
+  if (detail.includes("biblioteca está em uso")) {
+    return "A biblioteca está em uso por outra instância. Feche a outra instância e tente novamente.";
+  }
+  if (detail.includes("não foi encontrado")) {
+    return "Esse arquivo não está mais na biblioteca. Atualize a lista e tente novamente.";
+  }
+  return "Não foi possível excluir o arquivo. Tente novamente.";
+}

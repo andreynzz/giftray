@@ -3,10 +3,10 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import { Badge, Button, Input, MessageBar, MessageBarBody, Spinner, Text, makeStyles, shorthands, tokens } from "@fluentui/react-components";
-import { Add20Regular, ArrowClockwise20Regular, Copy20Regular, Dismiss20Regular, Document20Regular } from "@fluentui/react-icons";
-import { copyLibraryItem, importRemoteMedia, libraryPreviewUrl, libraryThumbnailUrl, listLibraryItems, renameLibraryItem, selectAndImportMedia, type ImportResult, type LibraryItem } from "../../platform/tauri/library";
-import { copyFailureMessage, importFailureMessage, renameFailureMessage } from "./lib/library-feedback";
+import { Badge, Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Input, MessageBar, MessageBarBody, Spinner, Text, makeStyles, shorthands, tokens } from "@fluentui/react-components";
+import { Add20Regular, ArrowClockwise20Regular, Copy20Regular, Delete20Regular, Dismiss20Regular, Document20Regular } from "@fluentui/react-icons";
+import { copyLibraryItem, deleteLibraryItem, importRemoteMedia, libraryPreviewUrl, libraryThumbnailUrl, listLibraryItems, renameLibraryItem, selectAndImportMedia, type ImportResult, type LibraryItem } from "../../platform/tauri/library";
+import { copyFailureMessage, deleteFailureMessage, importFailureMessage, renameFailureMessage } from "./lib/library-feedback";
 import { canCopyLibraryItem, canPreviewLibraryItem, canStartRemoteImport, filterLibraryItems, formatByteSize, libraryItemLabel, sortLibraryItems } from "./lib/library-presentation";
 
 const useStyles = makeStyles({
@@ -62,6 +62,9 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renaming, setRenaming] = useState(false);
+  const [deleteCandidate, setDeleteCandidate] = useState<LibraryItem | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [thumbnailFailures, setThumbnailFailures] = useState<Set<string>>(() => new Set());
   const [previewResult, setPreviewResult] = useState<{ id: string; state: "ready" | "error" } | null>(null);
@@ -72,6 +75,7 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
   const isImportingRef = useRef(false);
   const copyingIdRef = useRef<string | null>(null);
   const isRenamingRef = useRef(false);
+  const isDeletingRef = useRef(false);
   const buttonRef = importButtonRef ?? localImportButtonRef;
   const reducedMotion = useReducedMotion();
   const selectedItem = items.find((item) => item.id === selectedId) ?? null;
@@ -226,7 +230,55 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
     setPreviewResult(null);
   };
 
+  const deleteItem = async () => {
+    const item = deleteCandidate;
+    if (!item || isDeletingRef.current) return;
+    isDeletingRef.current = true;
+    setDeleting(true);
+    setDeleteError(null);
+    setFeedback(null);
+    try {
+      await deleteLibraryItem(item.id);
+      setItems((current) => current.filter((currentItem) => currentItem.id !== item.id));
+      if (selectedId === item.id) clearSelection();
+      if (renamingId === item.id) { setRenamingId(null); setRenameValue(""); }
+      setDeleteCandidate(null);
+      setDeleteError(null);
+      setFeedback({ intent: "success", message: "Arquivo excluído da biblioteca." });
+      window.requestAnimationFrame(() => searchInputRef.current?.focus());
+    } catch (error: unknown) {
+      setDeleteError(deleteFailureMessage(error));
+    } finally {
+      isDeletingRef.current = false;
+      setDeleting(false);
+    }
+  };
+
+  const openDeleteDialog = (item: LibraryItem) => {
+    setDeleteError(null);
+    setDeleteCandidate(item);
+  };
+
+  const cancelDeleteDialog = () => {
+    if (deleting) return;
+    setDeleteError(null);
+    setDeleteCandidate(null);
+  };
+
   return <section className={styles.section} aria-labelledby="library-title">
+    <Dialog open={deleteCandidate !== null} onOpenChange={(_, data) => { if (!deleting && !data.open) cancelDeleteDialog(); }}>
+      <DialogSurface>
+        <DialogBody>
+          <DialogTitle>Excluir arquivo?</DialogTitle>
+          <DialogContent>{deleteCandidate && <>“{libraryItemLabel(deleteCandidate)}” será excluído permanentemente da biblioteca.</>}</DialogContent>
+          {deleteError && <MessageBar intent="error" role="alert"><MessageBarBody>{deleteError}</MessageBarBody></MessageBar>}
+          <DialogActions>
+            <Button appearance="secondary" disabled={deleting} onClick={cancelDeleteDialog}>Cancelar</Button>
+            <Button appearance="primary" disabled={deleting} onClick={() => void deleteItem()}>{deleting ? "Excluindo…" : "Excluir"}</Button>
+          </DialogActions>
+        </DialogBody>
+      </DialogSurface>
+    </Dialog>
     <div className={styles.toolbar}>
       <div className={styles.title}>
         <Text id="library-title" as="h1" size={500} weight="semibold">Biblioteca</Text>
@@ -318,6 +370,7 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
         >
           {copyingId === item.id ? "Copiando…" : "Copiar arquivo"}
         </Button>
+        <Button appearance="secondary" icon={<Delete20Regular />} disabled={deleting || renamingId === item.id} onClick={() => openDeleteDialog(item)}>Excluir</Button>
         {renamingId === item.id
           ? <form className={styles.renameActions} onSubmit={(event) => { event.preventDefault(); void saveRename(item); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelRename(item.id); } }}>
               <Input autoFocus value={renameValue} disabled={renaming} onChange={(_, data) => setRenameValue(data.value)} aria-label={`Novo nome para ${libraryItemLabel(item)}`} />

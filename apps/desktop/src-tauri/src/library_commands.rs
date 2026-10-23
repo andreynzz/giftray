@@ -104,6 +104,19 @@ pub async fn rename_library_item(
         .map_err(sanitized_rename_error)
 }
 
+/// Deletes one known persistent item by opaque UUID only.
+#[tauri::command]
+pub async fn delete_library_item(
+    library: State<'_, LibraryRuntime>,
+    id: String,
+) -> Result<(), String> {
+    let library = library.library()?;
+    tauri::async_runtime::spawn_blocking(move || library.delete_item(&id))
+        .await
+        .map_err(|_| "Não foi possível excluir o arquivo da biblioteca.")?
+        .map_err(sanitized_delete_error)
+}
+
 /// Copies one persistent item by opaque ID. Paths and bytes stay native-only.
 #[tauri::command]
 pub async fn copy_library_item(
@@ -177,6 +190,16 @@ fn sanitized_rename_error(error: LibraryError) -> String {
         }
         LibraryError::InvalidDisplayName => "O nome informado não é válido.".into(),
         _ => "Não foi possível renomear o arquivo da biblioteca.".into(),
+    }
+}
+
+fn sanitized_delete_error(error: LibraryError) -> String {
+    match error {
+        LibraryError::InUse => "A biblioteca está em uso por outra instância.".into(),
+        LibraryError::InvalidId | LibraryError::NotFound => {
+            "O arquivo solicitado não foi encontrado na biblioteca.".into()
+        }
+        _ => "Não foi possível excluir o arquivo da biblioteca. Tente novamente.".into(),
     }
 }
 

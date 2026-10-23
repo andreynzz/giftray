@@ -3,7 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { describe, expect, it } from "vitest";
-import { copyFailureMessage, importFailureMessage, renameFailureMessage } from "./library-feedback";
+import { copyFailureMessage, deleteFailureMessage, importFailureMessage, renameFailureMessage } from "./library-feedback";
 
 describe("importFailureMessage", () => {
   it("keeps expected boundary failures actionable without exposing details", () => {
@@ -37,5 +37,13 @@ describe("renameFailureMessage", () => {
     expect(renameFailureMessage(new Error("sqlite database E:\\private\\library.db"))).toBe(
       "Não foi possível renomear o arquivo. Tente novamente.",
     );
+  });
+});
+
+describe("deleteFailureMessage", () => {
+  it("maps deletion failures without exposing internal details", () => {
+    expect(deleteFailureMessage("A biblioteca está em uso por outra instância.")).toContain("outra instância");
+    expect(deleteFailureMessage("O arquivo solicitado não foi encontrado na biblioteca.")).toContain("Atualize");
+    expect(deleteFailureMessage(new Error("sqlite E:\\private\\library.db"))).toBe("Não foi possível excluir o arquivo. Tente novamente.");
   });
 });
