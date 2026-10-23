@@ -42,3 +42,20 @@ export function copyFailureMessage(error: unknown): string {
   }
   return "Não foi possível copiar o arquivo. Tente novamente.";
 }
+
+/** Maps rename failures without leaking storage or database details. */
+export function renameFailureMessage(error: unknown): string {
+  const detail = errorDetail(error);
+
+  if (detail.includes("nome informado não é válido")) {
+    return "O nome não é válido. Use até 120 caracteres sem caracteres de controle.";
+  }
+  if (detail.includes("não foi encontrado")) {
+    return "Esse arquivo não está mais na biblioteca. Atualize a lista e tente novamente.";
+  }
+  if (detail.includes("biblioteca está em uso")) {
+    return "A biblioteca está em uso por outra instância. Feche a outra instância e tente novamente.";
+  }
+
+  return "Não foi possível renomear o arquivo. Tente novamente.";
+}

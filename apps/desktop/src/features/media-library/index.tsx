@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 import { Badge, Button, Input, MessageBar, MessageBarBody, Spinner, Text, makeStyles, shorthands, tokens } from "@fluentui/react-components";
 import { Add20Regular, ArrowClockwise20Regular, Copy20Regular, Dismiss20Regular, Document20Regular } from "@fluentui/react-icons";
 import { copyLibraryItem, importRemoteMedia, libraryPreviewUrl, libraryThumbnailUrl, listLibraryItems, renameLibraryItem, selectAndImportMedia, type ImportResult, type LibraryItem } from "../../platform/tauri/library";
-import { copyFailureMessage, importFailureMessage } from "./lib/library-feedback";
+import { copyFailureMessage, importFailureMessage, renameFailureMessage } from "./lib/library-feedback";
 import { canCopyLibraryItem, canPreviewLibraryItem, canStartRemoteImport, filterLibraryItems, formatByteSize, libraryItemLabel, sortLibraryItems } from "./lib/library-presentation";
 
 const useStyles = makeStyles({
@@ -67,6 +67,8 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
   const [previewResult, setPreviewResult] = useState<{ id: string; state: "ready" | "error" } | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const localImportButtonRef = useRef<HTMLButtonElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const renameTriggerRef = useRef<HTMLButtonElement | null>(null);
   const isImportingRef = useRef(false);
   const copyingIdRef = useRef<string | null>(null);
   const isRenamingRef = useRef(false);
@@ -170,8 +172,20 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
     }
   };
 
-  const beginRename = (item: LibraryItem) => {
+  const restoreRenameFocus = () => {
+    window.requestAnimationFrame(() => {
+      const trigger = renameTriggerRef.current;
+      if (trigger?.isConnected && !trigger.disabled) {
+        trigger.focus();
+      } else {
+        searchInputRef.current?.focus();
+      }
+    });
+  };
+
+  const beginRename = (item: LibraryItem, trigger: HTMLButtonElement) => {
     if (renaming) return;
+    renameTriggerRef.current = trigger;
     setRenamingId(item.id);
     setRenameValue(item.displayName ?? item.originalName ?? "");
   };
@@ -180,6 +194,7 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
     if (renaming) return;
     setRenamingId(null);
     setRenameValue("");
+    restoreRenameFocus();
   };
 
   const saveRename = async (item: LibraryItem) => {
@@ -193,8 +208,9 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
       setFeedback({ intent: "success", message: updated.displayName ? "Nome atualizado." : "Nome personalizado removido." });
       setRenamingId(null);
       setRenameValue("");
+      restoreRenameFocus();
     } catch (error: unknown) {
-      setFeedback({ intent: "error", message: importFailureMessage(error) });
+      setFeedback({ intent: "error", message: renameFailureMessage(error) });
     } finally {
       isRenamingRef.current = false;
       setRenaming(false);
@@ -225,7 +241,7 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
       <Input className={styles.remoteInput} type="url" value={remoteUrl} disabled={importing} onChange={(_, data) => setRemoteUrl(data.value)} placeholder="https://exemplo.com/midia.gif" aria-label="URL da mídia" />
       <Button appearance="secondary" type="submit" disabled={!canStartRemoteImport(remoteUrl, importing)}>Salvar URL</Button>
     </form>
-    <Input className={styles.search} value={query} onChange={(_, data) => setQuery(data.value)} placeholder="Buscar por nome ou formato" aria-label="Buscar na biblioteca" />
+    <Input ref={searchInputRef} className={styles.search} value={query} onChange={(_, data) => setQuery(data.value)} placeholder="Buscar por nome ou formato" aria-label="Buscar na biblioteca" />
     {importing && <Text className={styles.feedback} role="status">Importando mídia…</Text>}
     {copyingId && <Text className={styles.feedback} role="status">Copiando arquivo…</Text>}
     {feedback && feedback.intent !== "error" && <Text className={styles.feedback} role="status">{feedback.message}</Text>}
@@ -304,12 +320,12 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
           {copyingId === item.id ? "Copiando…" : "Copiar arquivo"}
         </Button>
         {renamingId === item.id
-          ? <div className={styles.renameActions}>
-              <Input autoFocus value={renameValue} disabled={renaming} onChange={(_, data) => setRenameValue(data.value)} aria-label={`Novo nome para ${libraryItemLabel(item)}`} />
-              <Button appearance="secondary" size="small" disabled={renaming} onClick={() => void saveRename(item)}>{renaming ? "Salvando…" : "Salvar"}</Button>
-              <Button appearance="secondary" size="small" disabled={renaming} onClick={cancelRename}>Cancelar</Button>
-            </div>
-          : <Button appearance="secondary" size="small" disabled={renamingId !== null} onClick={() => beginRename(item)}>Renomear</Button>}
+          ? <form className={styles.renameActions} onSubmit={(event) => { event.preventDefault(); void saveRename(item); }}>
+              <Input autoFocus value={renameValue} disabled={renaming} onChange={(_, data) => setRenameValue(data.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelRename(); } }} aria-label={`Novo nome para ${libraryItemLabel(item)}`} />
+              <Button appearance="secondary" size="small" type="submit" disabled={renaming}>{renaming ? "Salvando…" : "Salvar"}</Button>
+              <Button appearance="secondary" size="small" type="button" disabled={renaming} onClick={cancelRename}>Cancelar</Button>
+            </form>
+          : <Button appearance="secondary" size="small" disabled={renamingId !== null} onClick={(event) => beginRename(item, event.currentTarget)}>Renomear</Button>}
       </li>)}
     </ul>}
   </section>;
