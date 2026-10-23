@@ -775,10 +775,12 @@ fn open_external_media_file(source: &Path) -> Result<File, LibraryError> {
         return Err(LibraryError::SourceUnavailable);
     }
     let mut wide = vec![0u16; length as usize + 1];
-    if unsafe { GetFinalPathNameByHandleW(handle, wide.as_mut_ptr(), wide.len() as u32, 0) } == 0 {
+    let final_length =
+        unsafe { GetFinalPathNameByHandleW(handle, wide.as_mut_ptr(), wide.len() as u32, 0) };
+    if final_length == 0 || final_length as usize >= wide.len() {
         return Err(LibraryError::SourceUnavailable);
     }
-    let final_path = String::from_utf16(&wide[..length as usize])
+    let final_path = String::from_utf16(&wide[..final_length as usize])
         .map_err(|_| LibraryError::SourceUnavailable)?;
     let root = extended_dos_drive_root(&final_path)?;
     let mut root_wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
