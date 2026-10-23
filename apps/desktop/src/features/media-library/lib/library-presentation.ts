@@ -24,6 +24,10 @@ export function canPreviewLibraryItem(item: LibraryItem, reducedMotion: boolean)
   return item.availability === "available" && !reducedMotion;
 }
 
+export function canStartRemoteImport(url: string, importing: boolean): boolean {
+  return !importing && url.trim().length > 0;
+}
+
 export function sortLibraryItems(items: LibraryItem[]): LibraryItem[] {
   return [...items].sort((left, right) => right.importedAt - left.importedAt);
 }

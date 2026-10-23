@@ -59,6 +59,24 @@ pub async fn select_and_import_media(
         .map_err(sanitized_error)
 }
 
+/// Downloads through the P0 policy before acquiring the library operation lock.
+/// The original URL never reaches SQLite, the filesystem metadata or the WebView result.
+#[tauri::command]
+pub async fn import_remote_media(
+    library: State<'_, LibraryRuntime>,
+    url: String,
+) -> Result<PublicImportResult, String> {
+    let library = library.library()?;
+    let bytes = crate::remote_media::download(&url)
+        .await
+        .map_err(|_| "Não foi possível baixar a mídia da URL informada.")?;
+    tauri::async_runtime::spawn_blocking(move || library.import_remote_bytes(&bytes))
+        .await
+        .map_err(|_| "Não foi possível concluir a importação da URL.")?
+        .map(public_import_result)
+        .map_err(sanitized_error)
+}
+
 #[tauri::command]
 pub async fn list_library_items(
     library: State<'_, LibraryRuntime>,
@@ -173,5 +191,12 @@ mod tests {
             serde_json::to_value(PublicImportResult::Cancelled).unwrap()["status"],
             "cancelled"
         );
+    }
+
+    #[test]
+    fn remote_failures_are_sanitized() {
+        let message = "Não foi possível baixar a mídia da URL informada.";
+        assert!(!message.contains("https://"));
+        assert!(!message.contains("token"));
     }
 }

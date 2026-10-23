@@ -3,11 +3,11 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import { Badge, Button, MessageBar, MessageBarBody, Spinner, Text, makeStyles, shorthands, tokens } from "@fluentui/react-components";
+import { Badge, Button, Input, MessageBar, MessageBarBody, Spinner, Text, makeStyles, shorthands, tokens } from "@fluentui/react-components";
 import { Add20Regular, ArrowClockwise20Regular, Copy20Regular, Dismiss20Regular, Document20Regular } from "@fluentui/react-icons";
-import { copyLibraryItem, libraryPreviewUrl, libraryThumbnailUrl, listLibraryItems, selectAndImportMedia, type LibraryItem } from "../../platform/tauri/library";
+import { copyLibraryItem, importRemoteMedia, libraryPreviewUrl, libraryThumbnailUrl, listLibraryItems, selectAndImportMedia, type ImportResult, type LibraryItem } from "../../platform/tauri/library";
 import { copyFailureMessage, importFailureMessage } from "./lib/library-feedback";
-import { canCopyLibraryItem, canPreviewLibraryItem, formatByteSize, libraryItemLabel, sortLibraryItems } from "./lib/library-presentation";
+import { canCopyLibraryItem, canPreviewLibraryItem, canStartRemoteImport, formatByteSize, libraryItemLabel, sortLibraryItems } from "./lib/library-presentation";
 
 const useStyles = makeStyles({
   section: { display: "grid", gap: "12px" },
@@ -26,6 +26,8 @@ const useStyles = makeStyles({
   empty: { display: "grid", justifyItems: "start", gap: "8px", padding: "20px 16px", backgroundColor: tokens.colorNeutralBackground2, ...shorthands.borderRadius(tokens.borderRadiusMedium) },
   loading: { display: "flex", alignItems: "center", minHeight: "80px" },
   feedback: { display: "block" },
+  remoteImport: { display: "flex", gap: "8px", flexWrap: "wrap", alignItems: "end" },
+  remoteInput: { flexGrow: 1, minWidth: "180px" },
   preview: { display: "grid", gap: "8px", padding: "12px", backgroundColor: tokens.colorNeutralBackground2, ...shorthands.borderRadius(tokens.borderRadiusMedium) },
   previewMedia: { display: "grid", placeItems: "center", minHeight: "180px", maxHeight: "300px", overflow: "hidden", backgroundColor: tokens.colorNeutralBackground3, ...shorthands.borderRadius(tokens.borderRadiusSmall) },
   previewImage: { width: "100%", height: "100%", maxHeight: "300px", objectFit: "contain" },
@@ -52,6 +54,7 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [importing, setImporting] = useState(false);
+  const [remoteUrl, setRemoteUrl] = useState("");
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [thumbnailFailures, setThumbnailFailures] = useState<Set<string>>(() => new Set());
@@ -108,12 +111,33 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
         buttonRef.current?.focus();
         return;
       }
-      setItems((current) => sortLibraryItems([result.item, ...current.filter((item) => item.id !== result.item.id)]));
-      setState("ready");
-      setFeedback({
-        intent: result.status === "imported" ? "success" : "info",
-        message: result.status === "imported" ? "Arquivo salvo na biblioteca." : "Esse arquivo já está na biblioteca.",
-      });
+      showImportResult(result);
+    } catch (error: unknown) {
+      setFeedback({ intent: "error", message: importFailureMessage(error) });
+    } finally {
+      isImportingRef.current = false;
+      setImporting(false);
+    }
+  };
+
+  const showImportResult = (result: Exclude<ImportResult, { status: "cancelled" }>) => {
+    setItems((current) => sortLibraryItems([result.item, ...current.filter((item) => item.id !== result.item.id)]));
+    setState("ready");
+    setFeedback({
+      intent: result.status === "imported" ? "success" : "info",
+      message: result.status === "imported" ? "Arquivo salvo na biblioteca." : "Esse arquivo já está na biblioteca.",
+    });
+  };
+
+  const importRemote = async () => {
+    if (!canStartRemoteImport(remoteUrl, isImportingRef.current)) return;
+    isImportingRef.current = true;
+    setImporting(true);
+    setFeedback(null);
+    try {
+      const result = await importRemoteMedia(remoteUrl);
+      showImportResult(result);
+      setRemoteUrl("");
     } catch (error: unknown) {
       setFeedback({ intent: "error", message: importFailureMessage(error) });
     } finally {
@@ -158,7 +182,11 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
         Importar arquivo
       </Button>
     </div>
-    {importing && <Text className={styles.feedback} role="status">Importando arquivo…</Text>}
+    <form className={styles.remoteImport} onSubmit={(event) => { event.preventDefault(); void importRemote(); }}>
+      <Input className={styles.remoteInput} type="url" value={remoteUrl} disabled={importing} onChange={(_, data) => setRemoteUrl(data.value)} placeholder="https://exemplo.com/midia.gif" aria-label="URL da mídia" />
+      <Button appearance="secondary" type="submit" disabled={!canStartRemoteImport(remoteUrl, importing)}>Salvar URL</Button>
+    </form>
+    {importing && <Text className={styles.feedback} role="status">Importando mídia…</Text>}
     {copyingId && <Text className={styles.feedback} role="status">Copiando arquivo…</Text>}
     {feedback && feedback.intent !== "error" && <Text className={styles.feedback} role="status">{feedback.message}</Text>}
     {feedback?.intent === "error" && <MessageBar intent="error"><MessageBarBody>

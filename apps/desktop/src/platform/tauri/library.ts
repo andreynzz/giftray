@@ -28,6 +28,11 @@ export function selectAndImportMedia(): Promise<ImportResult> {
   return invoke("select_and_import_media");
 }
 
+/** Sends the untrusted URL only to the native P0-protected downloader. */
+export function importRemoteMedia(url: string): Promise<Exclude<ImportResult, { status: "cancelled" }>> {
+  return invoke("import_remote_media", { url });
+}
+
 export function listLibraryItems(): Promise<LibraryItem[]> {
   return invoke("list_library_items");
 }

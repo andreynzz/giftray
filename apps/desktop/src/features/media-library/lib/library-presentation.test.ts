@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { LibraryItem } from "../../../platform/tauri/library";
-import { canCopyLibraryItem, canPreviewLibraryItem, formatByteSize, libraryItemLabel, sortLibraryItems } from "./library-presentation";
+import { canCopyLibraryItem, canPreviewLibraryItem, canStartRemoteImport, formatByteSize, libraryItemLabel, sortLibraryItems } from "./library-presentation";
 
 const item = (importedAt: number, originalName: string | null): LibraryItem => ({
   id: `${importedAt}`, format: "gif", byteSize: 1024, sourceKind: "local_file",
@@ -39,5 +39,12 @@ describe("library presentation", () => {
     expect(canPreviewLibraryItem(item(1, "available.gif"), false)).toBe(true);
     expect(canPreviewLibraryItem(item(1, "available.gif"), true)).toBe(false);
     expect(canPreviewLibraryItem({ ...item(1, "missing.gif"), availability: "missing" }, false)).toBe(false);
+  });
+
+  it("requires a URL and no concurrent import before enabling remote import", () => {
+    expect(canStartRemoteImport("", false)).toBe(false);
+    expect(canStartRemoteImport("  ", false)).toBe(false);
+    expect(canStartRemoteImport("https://cdn.example.test/reaction.gif", true)).toBe(false);
+    expect(canStartRemoteImport("https://cdn.example.test/reaction.gif", false)).toBe(true);
   });
 });
