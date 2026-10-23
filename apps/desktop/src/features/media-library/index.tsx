@@ -68,7 +68,7 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
   const [feedback, setFeedback] = useState<Feedback>(null);
   const localImportButtonRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const renameTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const renameButtonRefs = useRef(new Map<string, HTMLElement>());
   const isImportingRef = useRef(false);
   const copyingIdRef = useRef<string | null>(null);
   const isRenamingRef = useRef(false);
@@ -172,10 +172,10 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
     }
   };
 
-  const restoreRenameFocus = () => {
+  const restoreRenameFocus = (id: string) => {
     window.requestAnimationFrame(() => {
-      const trigger = renameTriggerRef.current;
-      if (trigger?.isConnected && !trigger.disabled) {
+      const trigger = renameButtonRefs.current.get(id);
+      if (trigger?.isConnected) {
         trigger.focus();
       } else {
         searchInputRef.current?.focus();
@@ -183,18 +183,17 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
     });
   };
 
-  const beginRename = (item: LibraryItem, trigger: HTMLButtonElement) => {
+  const beginRename = (item: LibraryItem) => {
     if (renaming) return;
-    renameTriggerRef.current = trigger;
     setRenamingId(item.id);
     setRenameValue(item.displayName ?? item.originalName ?? "");
   };
 
-  const cancelRename = () => {
+  const cancelRename = (id: string) => {
     if (renaming) return;
     setRenamingId(null);
     setRenameValue("");
-    restoreRenameFocus();
+    restoreRenameFocus(id);
   };
 
   const saveRename = async (item: LibraryItem) => {
@@ -208,7 +207,7 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
       setFeedback({ intent: "success", message: updated.displayName ? "Nome atualizado." : "Nome personalizado removido." });
       setRenamingId(null);
       setRenameValue("");
-      restoreRenameFocus();
+      restoreRenameFocus(updated.id);
     } catch (error: unknown) {
       setFeedback({ intent: "error", message: renameFailureMessage(error) });
     } finally {
@@ -320,12 +319,12 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
           {copyingId === item.id ? "Copiando…" : "Copiar arquivo"}
         </Button>
         {renamingId === item.id
-          ? <form className={styles.renameActions} onSubmit={(event) => { event.preventDefault(); void saveRename(item); }}>
-              <Input autoFocus value={renameValue} disabled={renaming} onChange={(_, data) => setRenameValue(data.value)} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelRename(); } }} aria-label={`Novo nome para ${libraryItemLabel(item)}`} />
+          ? <form className={styles.renameActions} onSubmit={(event) => { event.preventDefault(); void saveRename(item); }} onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); cancelRename(item.id); } }}>
+              <Input autoFocus value={renameValue} disabled={renaming} onChange={(_, data) => setRenameValue(data.value)} aria-label={`Novo nome para ${libraryItemLabel(item)}`} />
               <Button appearance="secondary" size="small" type="submit" disabled={renaming}>{renaming ? "Salvando…" : "Salvar"}</Button>
-              <Button appearance="secondary" size="small" type="button" disabled={renaming} onClick={cancelRename}>Cancelar</Button>
+              <Button appearance="secondary" size="small" type="button" disabled={renaming} onClick={() => cancelRename(item.id)}>Cancelar</Button>
             </form>
-          : <Button appearance="secondary" size="small" disabled={renamingId !== null} onClick={(event) => beginRename(item, event.currentTarget)}>Renomear</Button>}
+          : <Button ref={(element) => { if (element) renameButtonRefs.current.set(item.id, element); else renameButtonRefs.current.delete(item.id); }} appearance="secondary" size="small" disabled={renamingId !== null} onClick={() => beginRename(item)}>Renomear</Button>}
       </li>)}
     </ul>}
   </section>;
