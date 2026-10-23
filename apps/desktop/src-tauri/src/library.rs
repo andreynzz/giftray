@@ -229,6 +229,17 @@ impl Library {
         )
     }
 
+    pub(crate) fn import_external_file(&self, source: &Path) -> Result<ImportResult, LibraryError> {
+        let mut file = open_external_media_file(source)?;
+        self.import_reader_with(
+            &mut file,
+            SourceKind::LocalFile,
+            sanitized_name(source),
+            copy_to_part,
+            publish_part,
+        )
+    }
+
     /// Persists bytes already obtained by the approved remote downloader.
     /// The originating URL is deliberately not accepted or stored here.
     pub fn import_remote_bytes(&self, bytes: &[u8]) -> Result<ImportResult, LibraryError> {
@@ -720,6 +731,82 @@ fn controlled_media_path(
 }
 
 #[cfg(windows)]
+fn open_external_media_file(source: &Path) -> Result<File, LibraryError> {
+    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+    use windows_sys::Win32::{
+        Storage::FileSystem::{
+            GetDriveTypeW, GetFinalPathNameByHandleW, FILE_FLAG_OPEN_REPARSE_POINT,
+        },
+        System::WindowsProgramming::DRIVE_FIXED,
+    };
+    if !source.is_absolute()
+        || source.as_os_str().is_empty()
+        || source.to_string_lossy().starts_with("\\\\")
+        || source
+            .components()
+            .any(|c| matches!(c, Component::ParentDir))
+    {
+        return Err(LibraryError::SourceUnavailable);
+    }
+    for component in source.ancestors().skip(1) {
+        let metadata =
+            fs::symlink_metadata(component).map_err(|_| LibraryError::SourceUnavailable)?;
+        if is_reparse_point(&metadata) {
+            return Err(LibraryError::SourceUnavailable);
+        }
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(source)
+        .map_err(|_| LibraryError::SourceUnavailable)?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| LibraryError::SourceUnavailable)?;
+    if !metadata.file_type().is_file()
+        || is_reparse_point(&metadata)
+        || metadata.len() > MAX_MEDIA_BYTES
+    {
+        return Err(LibraryError::SourceUnavailable);
+    }
+    let handle = file.as_raw_handle().cast();
+    let length = unsafe { GetFinalPathNameByHandleW(handle, std::ptr::null_mut(), 0, 0) };
+    if length == 0 || length > 32767 {
+        return Err(LibraryError::SourceUnavailable);
+    }
+    let mut wide = vec![0u16; length as usize + 1];
+    if unsafe { GetFinalPathNameByHandleW(handle, wide.as_mut_ptr(), wide.len() as u32, 0) } == 0 {
+        return Err(LibraryError::SourceUnavailable);
+    }
+    let final_path = String::from_utf16(&wide[..length as usize])
+        .map_err(|_| LibraryError::SourceUnavailable)?;
+    let root = extended_dos_drive_root(&final_path)?;
+    let mut root_wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+    if unsafe { GetDriveTypeW(root_wide.as_mut_ptr()) } != DRIVE_FIXED {
+        return Err(LibraryError::SourceUnavailable);
+    }
+    Ok(file)
+}
+
+/// Extracts `C:\\` from a final handle path such as `\\\\?\\C:\\media.gif`.
+/// UNC, volume GUID and device namespaces have no approved local-drive root.
+fn extended_dos_drive_root(path: &str) -> Result<String, LibraryError> {
+    let Some(rest) = path.strip_prefix(r"\\?\") else {
+        return Err(LibraryError::SourceUnavailable);
+    };
+    let bytes = rest.as_bytes();
+    if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\' {
+        return Err(LibraryError::SourceUnavailable);
+    }
+    Ok(format!("{}:\\", bytes[0] as char))
+}
+
+#[cfg(not(windows))]
+fn open_external_media_file(_: &Path) -> Result<File, LibraryError> {
+    Err(LibraryError::SourceUnavailable)
+}
+
+#[cfg(windows)]
 fn is_reparse_point(metadata: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
 
@@ -800,6 +887,30 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_only_extended_dos_drive_roots() {
+        assert_eq!(
+            extended_dos_drive_root(r"\\?\C:\Users\José\media.gif").unwrap(),
+            "C:\\"
+        );
+        assert_eq!(
+            extended_dos_drive_root(r"\\?\d:\media.png").unwrap(),
+            "d:\\"
+        );
+        for invalid in [
+            r"\\server\share\a.gif",
+            r"\\?\Volume{guid}\a.gif",
+            r"\\.\C:\a.gif",
+            r"C:\a.gif",
+            r"\\?\C:",
+        ] {
+            assert_eq!(
+                extended_dos_drive_root(invalid).unwrap_err(),
+                LibraryError::SourceUnavailable
+            );
+        }
+    }
 
     fn temp_root(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("giftray-library-{name}-{}", Uuid::new_v4()));
@@ -1015,6 +1126,116 @@ mod tests {
                 fs::read(library.media_directory().join(&item.storage_key)).unwrap(),
                 bytes
             );
+        }
+        drop(library);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn imports_validated_external_files_preserving_metadata_and_reopening() {
+        let root = temp_root("external-formats");
+        let library = Library::initialize(&root).unwrap();
+        let mut ids = Vec::new();
+        for (name, bytes, format) in [
+            ("a.gif", b"GIF89a external gif".as_slice(), MediaFormat::Gif),
+            (
+                "b.webp",
+                b"RIFFxxxxWEBP external webp".as_slice(),
+                MediaFormat::Webp,
+            ),
+            (
+                "c.png",
+                b"\x89PNG\r\n\x1a\n external png".as_slice(),
+                MediaFormat::Png,
+            ),
+        ] {
+            let external = source(&root, name, bytes);
+            let item = imported(library.import_external_file(&external).unwrap());
+            assert_eq!(item.format, format);
+            assert_eq!(item.source_kind, SourceKind::LocalFile);
+            assert_eq!(item.original_name, Some(name.into()));
+            assert_eq!(
+                fs::read(library.media_directory().join(&item.storage_key)).unwrap(),
+                bytes
+            );
+            ids.push(item.id);
+        }
+        let duplicate = root.join("a.gif");
+        match library.import_external_file(&duplicate).unwrap() {
+            ImportResult::AlreadyPresent { item } => assert_eq!(item.id, ids[0]),
+            _ => panic!("expected duplicate"),
+        }
+        drop(library);
+        let reopened = Library::initialize(&root).unwrap();
+        assert_eq!(reopened.list_items().unwrap().len(), 3);
+        drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_invalid_external_sources_without_persisting_an_item() {
+        let root = temp_root("external-invalid");
+        let library = Library::initialize(&root).unwrap();
+        assert_eq!(
+            library
+                .import_external_file(Path::new("relative.gif"))
+                .unwrap_err(),
+            LibraryError::SourceUnavailable
+        );
+        assert_eq!(
+            library
+                .import_external_file(&root.join("missing.gif"))
+                .unwrap_err(),
+            LibraryError::SourceUnavailable
+        );
+        assert_eq!(
+            library.import_external_file(&root).unwrap_err(),
+            LibraryError::SourceUnavailable
+        );
+        let oversized = root.join("oversized.gif");
+        let file = File::create(&oversized).unwrap();
+        file.set_len(MAX_MEDIA_BYTES + 1).unwrap();
+        assert_eq!(
+            library.import_external_file(&oversized).unwrap_err(),
+            LibraryError::SourceUnavailable
+        );
+        let invalid = source(&root, "invalid.gif", b"not media");
+        assert_eq!(
+            library.import_external_file(&invalid).unwrap_err(),
+            LibraryError::InvalidMedia
+        );
+        assert!(library.list_items().unwrap().is_empty());
+        assert_eq!(fs::read_dir(library.media_directory()).unwrap().count(), 0);
+        drop(library);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rejects_external_file_symlinks_without_reading_their_target() {
+        use std::os::windows::fs::symlink_file;
+
+        let root = temp_root("external-symlink");
+        let library = Library::initialize(&root).unwrap();
+        let target = source(&root, "target.gif", b"GIF89a external target");
+        let link = root.join("link.gif");
+        match symlink_file(&target, &link) {
+            Ok(()) => {
+                assert_eq!(
+                    library.import_external_file(&link).unwrap_err(),
+                    LibraryError::SourceUnavailable
+                );
+                assert!(library.list_items().unwrap().is_empty());
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+                    || error.raw_os_error() == Some(1314) =>
+            {
+                // Symlink creation needs Developer Mode or a privileged token on some Windows hosts.
+            }
+            Err(error) => panic!("failed to create test symlink: {error}"),
         }
         drop(library);
         fs::remove_dir_all(root).unwrap();
