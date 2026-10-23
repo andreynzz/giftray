@@ -13,7 +13,18 @@ export function formatByteSize(byteSize: number): string {
 }
 
 export function libraryItemLabel(item: LibraryItem): string {
-  return item.originalName?.trim() || `Arquivo ${item.format.toUpperCase()}`;
+  return item.displayName?.trim() || item.originalName?.trim() || `Arquivo ${item.format.toUpperCase()}`;
+}
+
+function searchText(value: string): string {
+  return value.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("pt-BR");
+}
+
+export function filterLibraryItems(items: LibraryItem[], query: string): LibraryItem[] {
+  const normalizedQuery = searchText(query.trim());
+  if (!normalizedQuery) return items;
+  return items.filter((item) => [libraryItemLabel(item), item.originalName ?? "", item.format]
+    .some((value) => searchText(value).includes(normalizedQuery)));
 }
 
 export function canCopyLibraryItem(item: LibraryItem, copyingId: string | null): boolean {

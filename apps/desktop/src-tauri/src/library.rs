@@ -28,6 +28,7 @@ const LIBRARY_DIRECTORY: &str = "library";
 const MEDIA_DIRECTORY: &str = "media";
 const DATABASE_FILE: &str = "library.sqlite3";
 const LOCK_FILE: &str = "library.lock";
+const MAX_DISPLAY_NAME_CHARS: usize = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaFormat {
@@ -64,6 +65,7 @@ pub struct LibraryItem {
     pub content_sha256: String,
     pub source_kind: SourceKind,
     pub original_name: Option<String>,
+    pub display_name: Option<String>,
     pub imported_at: i64,
     pub availability: Availability,
 }
@@ -78,6 +80,7 @@ pub struct PublicLibraryItem {
     pub byte_size: u64,
     pub source_kind: String,
     pub original_name: Option<String>,
+    pub display_name: Option<String>,
     pub imported_at: i64,
     pub availability: String,
 }
@@ -90,6 +93,7 @@ impl From<LibraryItem> for PublicLibraryItem {
             byte_size: item.byte_size,
             source_kind: item.source_kind.as_str().into(),
             original_name: item.original_name,
+            display_name: item.display_name,
             imported_at: item.imported_at,
             availability: item.availability.as_str().into(),
         }
@@ -160,6 +164,7 @@ pub enum LibraryError {
     EmptyFile,
     TooLarge,
     InvalidMedia,
+    InvalidDisplayName,
     SourceUnavailable,
     Storage,
     Database,
@@ -249,7 +254,7 @@ impl Library {
         let connection = self.open_connection()?;
         migrate(&connection)?;
         let mut statement = connection
-            .prepare("SELECT id, storage_key, format, byte_size, content_sha256, source_kind, original_name, imported_at, availability FROM library_items ORDER BY imported_at DESC, id ASC")
+            .prepare("SELECT id, storage_key, format, byte_size, content_sha256, source_kind, original_name, display_name, imported_at, availability FROM library_items ORDER BY imported_at DESC, id ASC")
             .map_err(|_| LibraryError::Database)?;
         let rows = statement
             .query_map([], row_to_item)
@@ -263,6 +268,26 @@ impl Library {
         let connection = self.open_connection()?;
         migrate(&connection)?;
         query_item(&connection, "WHERE content_sha256 = ?1", params![sha256])
+    }
+
+    pub fn rename_item(&self, id: &str, display_name: String) -> Result<LibraryItem, LibraryError> {
+        if Uuid::parse_str(id).is_err() {
+            return Err(LibraryError::InvalidId);
+        }
+        let display_name = normalize_display_name(&display_name)?;
+        let _operation = self.operation_lock()?;
+        let connection = self.open_connection()?;
+        migrate(&connection)?;
+        let changed = connection
+            .execute(
+                "UPDATE library_items SET display_name = ?1 WHERE id = ?2",
+                params![display_name, id],
+            )
+            .map_err(|_| LibraryError::Database)?;
+        if changed == 0 {
+            return Err(LibraryError::NotFound);
+        }
+        query_item(&connection, "WHERE id = ?1", params![id])?.ok_or(LibraryError::NotFound)
     }
 
     pub(crate) fn resolve_copy_source(&self, id: &str) -> Result<LibraryCopySource, LibraryError> {
@@ -393,6 +418,7 @@ impl Library {
             content_sha256: digest,
             source_kind,
             original_name,
+            display_name: None,
             imported_at: unix_timestamp()?,
             availability: Availability::Available,
         };
@@ -500,7 +526,7 @@ fn open_library_lock(path: &Path) -> io::Result<File> {
 
 fn migrate(connection: &Connection) -> Result<(), LibraryError> {
     connection.execute_batch("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);").map_err(|_| LibraryError::Database)?;
-    let present: Option<i64> = connection
+    let version_one: Option<i64> = connection
         .query_row(
             "SELECT version FROM schema_migrations WHERE version = 1",
             [],
@@ -508,7 +534,7 @@ fn migrate(connection: &Connection) -> Result<(), LibraryError> {
         )
         .optional()
         .map_err(|_| LibraryError::Database)?;
-    if present.is_none() {
+    if version_one.is_none() {
         let transaction = connection
             .unchecked_transaction()
             .map_err(|_| LibraryError::Database)?;
@@ -516,6 +542,29 @@ fn migrate(connection: &Connection) -> Result<(), LibraryError> {
         transaction
             .execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (1, ?1)",
+                params![unix_timestamp()?],
+            )
+            .map_err(|_| LibraryError::Database)?;
+        transaction.commit().map_err(|_| LibraryError::Database)?;
+    }
+    let version_two: Option<i64> = connection
+        .query_row(
+            "SELECT version FROM schema_migrations WHERE version = 2",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| LibraryError::Database)?;
+    if version_two.is_none() {
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|_| LibraryError::Database)?;
+        transaction
+            .execute_batch("ALTER TABLE library_items ADD COLUMN display_name TEXT NULL;")
+            .map_err(|_| LibraryError::Database)?;
+        transaction
+            .execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (2, ?1)",
                 params![unix_timestamp()?],
             )
             .map_err(|_| LibraryError::Database)?;
@@ -655,6 +704,19 @@ fn sanitized_name(source: &Path) -> Option<String> {
     }
 }
 
+fn normalize_display_name(value: &str) -> Result<Option<String>, LibraryError> {
+    let normalized = value.trim();
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    if normalized.chars().any(char::is_control)
+        || normalized.chars().count() > MAX_DISPLAY_NAME_CHARS
+    {
+        return Err(LibraryError::InvalidDisplayName);
+    }
+    Ok(Some(normalized.into()))
+}
+
 fn unix_timestamp() -> Result<i64, LibraryError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -663,7 +725,7 @@ fn unix_timestamp() -> Result<i64, LibraryError> {
 }
 
 fn insert_item(connection: &Connection, item: &LibraryItem) -> Result<(), LibraryError> {
-    connection.execute("INSERT INTO library_items (id, storage_key, format, byte_size, content_sha256, source_kind, original_name, imported_at, availability) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)", params![item.id, item.storage_key, item.format.as_str(), item.byte_size as i64, item.content_sha256, item.source_kind.as_str(), item.original_name, item.imported_at, item.availability.as_str()]).map_err(|_| LibraryError::Database)?;
+    connection.execute("INSERT INTO library_items (id, storage_key, format, byte_size, content_sha256, source_kind, original_name, display_name, imported_at, availability) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)", params![item.id, item.storage_key, item.format.as_str(), item.byte_size as i64, item.content_sha256, item.source_kind.as_str(), item.original_name, item.display_name, item.imported_at, item.availability.as_str()]).map_err(|_| LibraryError::Database)?;
     Ok(())
 }
 
@@ -672,7 +734,7 @@ fn query_item<P: rusqlite::Params>(
     filter: &str,
     parameters: P,
 ) -> Result<Option<LibraryItem>, LibraryError> {
-    let sql = format!("SELECT id, storage_key, format, byte_size, content_sha256, source_kind, original_name, imported_at, availability FROM library_items {filter}");
+    let sql = format!("SELECT id, storage_key, format, byte_size, content_sha256, source_kind, original_name, display_name, imported_at, availability FROM library_items {filter}");
     connection
         .query_row(&sql, parameters, row_to_item)
         .optional()
@@ -682,7 +744,7 @@ fn query_item<P: rusqlite::Params>(
 fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryItem> {
     let format = row.get::<_, String>(2)?;
     let source_kind = row.get::<_, String>(5)?;
-    let availability = row.get::<_, String>(8)?;
+    let availability = row.get::<_, String>(9)?;
     Ok(LibraryItem {
         id: row.get(0)?,
         storage_key: row.get(1)?,
@@ -692,7 +754,8 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryItem> {
         source_kind: SourceKind::from_str(&source_kind)
             .map_err(|_| rusqlite::Error::InvalidQuery)?,
         original_name: row.get(6)?,
-        imported_at: row.get(7)?,
+        display_name: row.get(7)?,
+        imported_at: row.get(8)?,
         availability: Availability::from_str(&availability)
             .map_err(|_| rusqlite::Error::InvalidQuery)?,
     })
@@ -727,6 +790,105 @@ mod tests {
         drop(library);
         let reopened = Library::initialize(&root).unwrap();
         drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn migrates_version_one_to_display_names_without_losing_items() {
+        let root = temp_root("migration-v2");
+        let library_root = root.join(LIBRARY_DIRECTORY);
+        fs::create_dir_all(library_root.join(MEDIA_DIRECTORY)).unwrap();
+        let connection = Connection::open(library_root.join(DATABASE_FILE)).unwrap();
+        connection.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL); INSERT INTO schema_migrations(version, applied_at) VALUES (1, 1); CREATE TABLE library_items (id TEXT PRIMARY KEY, storage_key TEXT NOT NULL UNIQUE, format TEXT NOT NULL, byte_size INTEGER NOT NULL, content_sha256 TEXT NOT NULL UNIQUE, source_kind TEXT NOT NULL, original_name TEXT NULL, imported_at INTEGER NOT NULL, availability TEXT NOT NULL);").unwrap();
+        let id = Uuid::new_v4().to_string();
+        connection.execute("INSERT INTO library_items (id, storage_key, format, byte_size, content_sha256, source_kind, original_name, imported_at, availability) VALUES (?1, ?2, 'gif', 7, ?3, 'local_file', 'legacy.gif', 1, 'available')", params![id, format!("{id}.gif"), "a".repeat(64)]).unwrap();
+        drop(connection);
+
+        let library = Library::initialize(&root).unwrap();
+        let item = library.get_item(&id).unwrap().unwrap();
+        assert_eq!(item.original_name, Some("legacy.gif".into()));
+        assert_eq!(item.display_name, None);
+        drop(library);
+        let reopened = Library::initialize(&root).unwrap();
+        assert_eq!(reopened.get_item(&id).unwrap().unwrap().display_name, None);
+        drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn renames_and_removes_display_names_without_changing_media_identity() {
+        let root = temp_root("rename");
+        let library = Library::initialize(&root).unwrap();
+        let source = source(&root, "original.gif", b"GIF89a rename");
+        let item = imported(library.import_local_file(&source).unwrap());
+        let renamed = library
+            .rename_item(&item.id, "  Café reação  ".into())
+            .unwrap();
+        assert_eq!(renamed.display_name, Some("Café reação".into()));
+        assert_eq!(renamed.original_name, item.original_name);
+        assert_eq!(renamed.storage_key, item.storage_key);
+        assert_eq!(renamed.content_sha256, item.content_sha256);
+        assert_eq!(renamed.source_kind, item.source_kind);
+        assert_eq!(
+            library
+                .rename_item(&item.id, "   ".into())
+                .unwrap()
+                .display_name,
+            None
+        );
+        drop(library);
+        let reopened = Library::initialize(&root).unwrap();
+        assert_eq!(
+            reopened.get_item(&item.id).unwrap().unwrap().display_name,
+            None
+        );
+        drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_names_and_keeps_the_previous_name_on_sqlite_failure() {
+        let root = temp_root("rename-errors");
+        let library = Library::initialize(&root).unwrap();
+        let source = source(&root, "original.gif", b"GIF89a errors");
+        let item = imported(library.import_local_file(&source).unwrap());
+        assert_eq!(
+            library
+                .rename_item("not-a-uuid", "name".into())
+                .unwrap_err(),
+            LibraryError::InvalidId
+        );
+        assert_eq!(
+            library
+                .rename_item(&Uuid::new_v4().to_string(), "name".into())
+                .unwrap_err(),
+            LibraryError::NotFound
+        );
+        assert_eq!(
+            library
+                .rename_item(&item.id, "bad\nname".into())
+                .unwrap_err(),
+            LibraryError::InvalidDisplayName
+        );
+        assert_eq!(
+            library
+                .rename_item(&item.id, "x".repeat(MAX_DISPLAY_NAME_CHARS + 1))
+                .unwrap_err(),
+            LibraryError::InvalidDisplayName
+        );
+        library.rename_item(&item.id, "Preservado".into()).unwrap();
+        let connection = library.open_connection().unwrap();
+        connection.execute_batch("CREATE TRIGGER reject_rename BEFORE UPDATE OF display_name ON library_items BEGIN SELECT RAISE(ABORT, 'test'); END;").unwrap();
+        drop(connection);
+        assert_eq!(
+            library.rename_item(&item.id, "Falha".into()).unwrap_err(),
+            LibraryError::Database
+        );
+        assert_eq!(
+            library.get_item(&item.id).unwrap().unwrap().display_name,
+            Some("Preservado".into())
+        );
+        drop(library);
         fs::remove_dir_all(root).unwrap();
     }
 

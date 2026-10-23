@@ -89,6 +89,21 @@ pub async fn list_library_items(
         .map_err(sanitized_error)
 }
 
+/// Updates only the optional display name of one opaque library item.
+#[tauri::command]
+pub async fn rename_library_item(
+    library: State<'_, LibraryRuntime>,
+    id: String,
+    display_name: String,
+) -> Result<PublicLibraryItem, String> {
+    let library = library.library()?;
+    tauri::async_runtime::spawn_blocking(move || library.rename_item(&id, display_name))
+        .await
+        .map_err(|_| "Não foi possível renomear o arquivo da biblioteca.")?
+        .map(PublicLibraryItem::from)
+        .map_err(sanitized_rename_error)
+}
+
 /// Copies one persistent item by opaque ID. Paths and bytes stay native-only.
 #[tauri::command]
 pub async fn copy_library_item(
@@ -124,6 +139,7 @@ fn sanitized_error(error: LibraryError) -> String {
         LibraryError::EmptyFile | LibraryError::InvalidMedia => {
             "O arquivo não possui um formato GIF, WebP ou PNG confirmado.".into()
         }
+        LibraryError::InvalidDisplayName => "O nome informado não é válido.".into(),
         LibraryError::TooLarge => "O arquivo excede o limite de 25 MB.".into(),
         LibraryError::SourceUnavailable => "Não foi possível abrir o arquivo selecionado.".into(),
         LibraryError::Storage | LibraryError::Database => {
@@ -146,7 +162,21 @@ fn sanitized_copy_error(error: LibraryError) -> String {
         LibraryError::EmptyFile
         | LibraryError::SourceUnavailable
         | LibraryError::Storage
-        | LibraryError::Database => "Não foi possível copiar o arquivo da biblioteca.".into(),
+        | LibraryError::Database
+        | LibraryError::InvalidDisplayName => {
+            "Não foi possível copiar o arquivo da biblioteca.".into()
+        }
+    }
+}
+
+fn sanitized_rename_error(error: LibraryError) -> String {
+    match error {
+        LibraryError::InUse => "A biblioteca está em uso por outra instância.".into(),
+        LibraryError::InvalidId | LibraryError::NotFound => {
+            "O arquivo solicitado não foi encontrado na biblioteca.".into()
+        }
+        LibraryError::InvalidDisplayName => "O nome informado não é válido.".into(),
+        _ => "Não foi possível renomear o arquivo da biblioteca.".into(),
     }
 }
 
@@ -164,6 +194,7 @@ mod tests {
             content_sha256: "a".repeat(64),
             source_kind: SourceKind::LocalFile,
             original_name: Some("reaction.gif".into()),
+            display_name: None,
             imported_at: 1,
             availability: Availability::Available,
         }
@@ -178,6 +209,7 @@ mod tests {
         assert_eq!(value["status"], "imported");
         assert!(value["item"].get("storageKey").is_none());
         assert!(value["item"].get("contentSha256").is_none());
+        assert!(value["item"].get("displayName").is_some());
     }
 
     #[test]
