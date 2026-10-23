@@ -290,6 +290,42 @@ impl Library {
         query_item(&connection, "WHERE id = ?1", params![id])?.ok_or(LibraryError::NotFound)
     }
 
+    /// Deletes only the controlled file associated with an existing opaque ID.
+    /// A missing controlled file is an intentional cleanup of its known record.
+    pub fn delete_item(&self, id: &str) -> Result<(), LibraryError> {
+        if Uuid::parse_str(id).is_err() {
+            return Err(LibraryError::InvalidId);
+        }
+        let _operation = self.operation_lock()?;
+        let connection = self.open_connection()?;
+        migrate(&connection)?;
+        let item =
+            query_item(&connection, "WHERE id = ?1", params![id])?.ok_or(LibraryError::NotFound)?;
+        if !safe_storage_key(&item.id, &item.storage_key) {
+            return Err(LibraryError::Storage);
+        }
+        let media_directory = self.media_directory();
+        let candidate = media_directory.join(&item.storage_key);
+        match fs::symlink_metadata(&candidate) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_file() || is_reparse_point(&metadata) {
+                    return Err(LibraryError::Storage);
+                }
+                let path = controlled_media_path(&media_directory, &item.storage_key)?;
+                fs::remove_file(path).map_err(|_| LibraryError::Storage)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(LibraryError::Storage),
+        }
+        let changed = connection
+            .execute("DELETE FROM library_items WHERE id = ?1", params![id])
+            .map_err(|_| LibraryError::Database)?;
+        if changed == 0 {
+            return Err(LibraryError::NotFound);
+        }
+        Ok(())
+    }
+
     pub(crate) fn resolve_copy_source(&self, id: &str) -> Result<LibraryCopySource, LibraryError> {
         if Uuid::parse_str(id).is_err() {
             return Err(LibraryError::InvalidId);
@@ -843,6 +879,35 @@ mod tests {
             None
         );
         drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn deletes_known_available_and_missing_items_without_touching_other_media() {
+        let root = temp_root("delete");
+        let library = Library::initialize(&root).unwrap();
+        let first = imported(
+            library
+                .import_local_file(&source(&root, "first.gif", b"GIF89a first"))
+                .unwrap(),
+        );
+        let second = imported(
+            library
+                .import_local_file(&source(&root, "second.png", b"\x89PNG\r\n\x1a\n second"))
+                .unwrap(),
+        );
+        let first_path = library.media_directory().join(&first.storage_key);
+        library.delete_item(&first.id).unwrap();
+        assert!(!first_path.exists());
+        assert!(library.get_item(&first.id).unwrap().is_none());
+        fs::remove_file(library.media_directory().join(&second.storage_key)).unwrap();
+        library.delete_item(&second.id).unwrap();
+        assert!(library.get_item(&second.id).unwrap().is_none());
+        assert_eq!(
+            library.delete_item("not-a-uuid").unwrap_err(),
+            LibraryError::InvalidId
+        );
+        drop(library);
         fs::remove_dir_all(root).unwrap();
     }
 

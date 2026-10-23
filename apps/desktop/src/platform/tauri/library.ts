@@ -44,6 +44,11 @@ export function renameLibraryItem(id: string, displayName: string): Promise<Libr
 }
 
 /** Sends only the opaque persistent-item UUID across IPC. */
+export function deleteLibraryItem(id: string): Promise<void> {
+  return invoke("delete_library_item", { id });
+}
+
+/** Sends only the opaque persistent-item UUID across IPC. */
 export function copyLibraryItem(id: string): Promise<void> {
   return invoke("copy_library_item", { id });
 }
