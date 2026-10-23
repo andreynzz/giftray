@@ -12,7 +12,7 @@
 
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, Cursor, Read, Write},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
@@ -224,6 +224,19 @@ impl Library {
         )
     }
 
+    /// Persists bytes already obtained by the approved remote downloader.
+    /// The originating URL is deliberately not accepted or stored here.
+    pub fn import_remote_bytes(&self, bytes: &[u8]) -> Result<ImportResult, LibraryError> {
+        let mut source = Cursor::new(bytes);
+        self.import_reader_with(
+            &mut source,
+            SourceKind::RemoteUrl,
+            None,
+            copy_to_part,
+            publish_part,
+        )
+    }
+
     pub fn get_item(&self, id: &str) -> Result<Option<LibraryItem>, LibraryError> {
         let _operation = self.operation_lock()?;
         let connection = self.open_connection()?;
@@ -306,14 +319,35 @@ impl Library {
         publish: Publish,
     ) -> Result<ImportResult, LibraryError>
     where
-        Copy: FnOnce(&Path, &mut File) -> Result<(MediaFormat, u64, String), LibraryError>,
+        Copy: FnOnce(&Path, &mut dyn Read) -> Result<(MediaFormat, u64, String), LibraryError>,
+        Publish: FnOnce(&Path, &Path) -> Result<(), LibraryError>,
+    {
+        let mut source_file = File::open(source).map_err(|_| LibraryError::SourceUnavailable)?;
+        self.import_reader_with(
+            &mut source_file,
+            SourceKind::LocalFile,
+            sanitized_name(source),
+            copy,
+            publish,
+        )
+    }
+
+    fn import_reader_with<Copy, Publish>(
+        &self,
+        source: &mut dyn Read,
+        source_kind: SourceKind,
+        original_name: Option<String>,
+        copy: Copy,
+        publish: Publish,
+    ) -> Result<ImportResult, LibraryError>
+    where
+        Copy: FnOnce(&Path, &mut dyn Read) -> Result<(MediaFormat, u64, String), LibraryError>,
         Publish: FnOnce(&Path, &Path) -> Result<(), LibraryError>,
     {
         let _operation = self.operation_lock()?;
-        let mut source_file = File::open(source).map_err(|_| LibraryError::SourceUnavailable)?;
         let id = Uuid::new_v4();
         let part = self.media_directory().join(format!(".{id}.pending.part"));
-        let (format, byte_size, digest) = match copy(&part, &mut source_file) {
+        let (format, byte_size, digest) = match copy(&part, source) {
             Ok(value) => value,
             Err(error) => {
                 let _ = fs::remove_file(&part);
@@ -321,10 +355,25 @@ impl Library {
             }
         };
 
-        let connection = self.open_connection()?;
-        migrate(&connection)?;
-        if let Some(item) = query_item(&connection, "WHERE content_sha256 = ?1", params![&digest])?
+        let connection = match self.open_connection().and_then(|connection| {
+            migrate(&connection)?;
+            Ok(connection)
+        }) {
+            Ok(connection) => connection,
+            Err(error) => {
+                let _ = fs::remove_file(&part);
+                return Err(error);
+            }
+        };
+        let existing = match query_item(&connection, "WHERE content_sha256 = ?1", params![&digest])
         {
+            Ok(item) => item,
+            Err(error) => {
+                let _ = fs::remove_file(&part);
+                return Err(error);
+            }
+        };
+        if let Some(item) = existing {
             let _ = fs::remove_file(&part);
             return Ok(ImportResult::AlreadyPresent { item });
         }
@@ -342,8 +391,8 @@ impl Library {
             storage_key,
             byte_size,
             content_sha256: digest,
-            source_kind: SourceKind::LocalFile,
-            original_name: sanitized_name(source),
+            source_kind,
+            original_name,
             imported_at: unix_timestamp()?,
             availability: Availability::Available,
         };
@@ -477,7 +526,7 @@ fn migrate(connection: &Connection) -> Result<(), LibraryError> {
 
 fn copy_to_part(
     part: &Path,
-    source: &mut File,
+    source: &mut dyn Read,
 ) -> Result<(MediaFormat, u64, String), LibraryError> {
     let mut output = File::create(part).map_err(|_| LibraryError::Storage)?;
     let mut buffer = [0u8; 8192];
@@ -729,6 +778,104 @@ mod tests {
     }
 
     #[test]
+    fn imports_remote_bytes_without_storing_the_url_and_reopens() {
+        let root = temp_root("remote");
+        let library = Library::initialize(&root).unwrap();
+        for (bytes, format) in [
+            (b"GIF89a remote".as_slice(), MediaFormat::Gif),
+            (b"RIFFxxxxWEBP remote".as_slice(), MediaFormat::Webp),
+            (b"\x89PNG\r\n\x1a\n remote".as_slice(), MediaFormat::Png),
+        ] {
+            let item = imported(library.import_remote_bytes(bytes).unwrap());
+            assert_eq!(item.format, format);
+            assert_eq!(item.source_kind, SourceKind::RemoteUrl);
+            assert_eq!(item.original_name, None);
+            assert_eq!(
+                fs::read(library.media_directory().join(&item.storage_key)).unwrap(),
+                bytes
+            );
+        }
+        drop(library);
+        let reopened = Library::initialize(&root).unwrap();
+        assert_eq!(reopened.list_items().unwrap().len(), 3);
+        drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remote_duplicates_preserve_existing_local_metadata() {
+        let root = temp_root("remote-duplicate");
+        let library = Library::initialize(&root).unwrap();
+        let local = source(&root, "local-name.gif", b"GIF89a same bytes");
+        let item = imported(library.import_local_file(&local).unwrap());
+
+        match library.import_remote_bytes(b"GIF89a same bytes").unwrap() {
+            ImportResult::AlreadyPresent { item: existing } => {
+                assert_eq!(existing.id, item.id);
+                assert_eq!(existing.source_kind, SourceKind::LocalFile);
+                assert_eq!(existing.original_name, Some("local-name.gif".into()));
+            }
+            _ => panic!("expected remote duplicate"),
+        }
+        match library.import_remote_bytes(b"GIF89a same bytes").unwrap() {
+            ImportResult::AlreadyPresent { item: existing } => assert_eq!(existing.id, item.id),
+            _ => panic!("expected repeated remote duplicate"),
+        }
+        drop(library);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_or_oversized_remote_bytes_without_persisting_files() {
+        let root = temp_root("remote-invalid");
+        let library = Library::initialize(&root).unwrap();
+        assert_eq!(
+            library
+                .import_remote_bytes(b"<html>blocked</html>")
+                .unwrap_err(),
+            LibraryError::InvalidMedia
+        );
+        assert_eq!(
+            library.import_remote_bytes(b"").unwrap_err(),
+            LibraryError::EmptyFile
+        );
+        let mut oversized = b"GIF89a".to_vec();
+        oversized.resize(MAX_MEDIA_BYTES as usize + 1, 0);
+        assert_eq!(
+            library.import_remote_bytes(&oversized).unwrap_err(),
+            LibraryError::TooLarge
+        );
+        assert!(library.list_items().unwrap().is_empty());
+        assert_eq!(fs::read_dir(library.media_directory()).unwrap().count(), 0);
+        drop(library);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn remote_sqlite_failure_removes_the_published_file_and_record() {
+        let root = temp_root("remote-database-failure");
+        let library = Library::initialize(&root).unwrap();
+        let connection = library.open_connection().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_remote_insert BEFORE INSERT ON library_items BEGIN SELECT RAISE(ABORT, 'test'); END;",
+            )
+            .unwrap();
+        drop(connection);
+
+        assert_eq!(
+            library
+                .import_remote_bytes(b"GIF89a remote database")
+                .unwrap_err(),
+            LibraryError::Database
+        );
+        assert!(library.list_items().unwrap().is_empty());
+        assert_eq!(fs::read_dir(library.media_directory()).unwrap().count(), 0);
+        drop(library);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn rejects_invalid_empty_and_oversized_files() {
         let root = temp_root("invalid");
         let library = Library::initialize(&root).unwrap();
@@ -862,11 +1009,13 @@ mod tests {
     fn cleans_part_after_write_or_publish_failure() {
         let root = temp_root("failures");
         let library = Library::initialize(&root).unwrap();
-        let input = source(&root, "ok.gif", b"GIF89a ok");
+        let mut first_source = Cursor::new(b"GIF89a ok".as_slice());
         assert_eq!(
             library
-                .import_local_file_with(
-                    &input,
+                .import_reader_with(
+                    &mut first_source,
+                    SourceKind::RemoteUrl,
+                    None,
                     |part, _| {
                         fs::write(part, b"partial").unwrap();
                         Err(LibraryError::Storage)
@@ -876,9 +1025,16 @@ mod tests {
                 .unwrap_err(),
             LibraryError::Storage
         );
+        let mut second_source = Cursor::new(b"GIF89a ok".as_slice());
         assert_eq!(
             library
-                .import_local_file_with(&input, copy_to_part, |_, _| Err(LibraryError::Storage))
+                .import_reader_with(
+                    &mut second_source,
+                    SourceKind::RemoteUrl,
+                    None,
+                    copy_to_part,
+                    |_, _| Err(LibraryError::Storage),
+                )
                 .unwrap_err(),
             LibraryError::Storage
         );

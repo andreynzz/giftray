@@ -336,3 +336,11 @@ A WebView identifica mídia persistida somente pelo UUID público. O protocolo T
 Miniaturas são PNGs estáticos gerados no backend a partir do primeiro quadro, com dimensão máxima de 240×160 e teto de alocação de 16 MiB. A prévia selecionada recebe os bytes originais e, portanto, permite que GIF e WebP animados sejam reproduzidos pelo WebView2 quando ele os suportar. Em movimento reduzido, a interface solicita somente a miniatura estática. Item `missing`, mídia alterada, falha de decodificação ou erro de carregamento apresentam fallback sem impedir a lista ou a ação já existente de copiar por UUID.
 
 Os testes nativos cobrem rotas inválidas, traversal, item ausente, resposta e MIME controlados, falha de decodificação e geração de miniatura. Os testes de apresentação cobrem disponibilidade e movimento reduzido. Ainda são necessários smoke tests no Windows para animação GIF/WebP no WebView2, `prefers-reduced-motion`, DPI, temas claro/escuro/alto contraste e navegação com leitor de tela.
+
+## 18. Importação HTTPS persistente
+
+`import_remote_media(url)` recebe uma URL somente para entregá-la ao downloader P0 `remote_media::download`. A espera de DNS, TLS, redirects e corpo ocorre antes de qualquer lock de operação da biblioteca. Depois de receber todos os bytes sob as proteções já existentes (HTTPS/443, DNS público vinculado, sem proxy automático, redirects manuais, timeout de 30 segundos e 25 MiB), o comando chama a rotina nativa de persistência por `Read`.
+
+Essa rotina é a mesma usada pelo seletor local: valida assinatura e tamanho, calcula SHA-256, grava `.part`, deduplica, publica por `rename` e registra SQLite sob o mutex e lock de instância. Uma mídia remota nova recebe `source_kind = remote_url` e `original_name = None`; a URL, inclusive query, token e credenciais, não entra no banco, arquivo, log ou retorno IPC. Duplicata retorna o item existente sem alterar seus metadados.
+
+A interface envia somente a URL ao comando Tauri, bloqueia a importação por seletor e por URL enquanto uma já está em curso e preserva o texto em caso de erro. Os smoke tests pendentes em Windows incluem DNS/TLS reais permitidos, URL assinada expirada, feedback de erro sanitizado, reinício após importação e validação de foco/temas/DPI.
