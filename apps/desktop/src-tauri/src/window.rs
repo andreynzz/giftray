@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
-use tauri::{ AppHandle, Emitter, Manager };
+use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToggleAction {
@@ -11,16 +11,21 @@ enum ToggleAction {
 }
 
 fn toggle_action(is_visible: bool, is_minimized: bool) -> ToggleAction {
-    if is_visible && !is_minimized { ToggleAction::Hide } else { ToggleAction::Show }
+    if is_visible && !is_minimized {
+        ToggleAction::Hide
+    } else {
+        ToggleAction::Show
+    }
 }
 
 pub fn toggle_search_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    match
-        toggle_action(window.is_visible().unwrap_or(false), window.is_minimized().unwrap_or(false))
-    {
+    match toggle_action(
+        window.is_visible().unwrap_or(false),
+        window.is_minimized().unwrap_or(false),
+    ) {
         ToggleAction::Hide => {
             let _ = window.hide();
         }
@@ -46,7 +51,7 @@ pub fn hide_main_window(app: AppHandle) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ toggle_action, ToggleAction };
+    use super::{toggle_action, ToggleAction};
 
     #[test]
     fn toggle_hides_a_visible_normal_window() {
