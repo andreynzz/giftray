@@ -10,7 +10,7 @@ mod remote_media;
 mod shortcuts;
 mod window;
 
-use tauri::Manager;
+use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 pub fn run() {
@@ -48,6 +48,20 @@ pub fn run() {
         .manage(shortcuts::RegisteredShortcut(std::sync::Mutex::new(
             initial_shortcut,
         )))
+        .on_window_event(|window, event| {
+            if let WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                let runtime = window.state::<library_commands::LibraryRuntime>();
+                let Ok(library) = runtime.library() else {
+                    return;
+                };
+                let paths = paths.clone();
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let result = library_commands::import_external_paths(&library, &paths);
+                    let _ = app.emit("library-drop-result", result);
+                });
+            }
+        })
         .setup(move |app| {
             clipboard::cleanup_clipboard_cache(&app.handle());
             // Persistent-library recovery is native-only and separate from the

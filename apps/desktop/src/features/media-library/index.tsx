@@ -3,6 +3,7 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Badge, Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Input, MessageBar, MessageBarBody, Spinner, Text, makeStyles, shorthands, tokens } from "@fluentui/react-components";
 import { Add20Regular, ArrowClockwise20Regular, Copy20Regular, Delete20Regular, Dismiss20Regular, Document20Regular } from "@fluentui/react-icons";
 import { copyLibraryItem, deleteLibraryItem, importClipboardFiles, importRemoteMedia, libraryPreviewUrl, libraryThumbnailUrl, listLibraryItems, renameLibraryItem, selectAndImportMedia, type ClipboardImportResult, type ImportResult, type LibraryItem } from "../../platform/tauri/library";
@@ -113,6 +114,16 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
     const timeout = window.setTimeout(() => setFeedback(null), 5000);
     return () => window.clearTimeout(timeout);
   }, [feedback]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<ClipboardImportResult>("library-drop-result", ({ payload }) => {
+      if (payload.status !== "completed") return;
+      setItems((current) => sortLibraryItems([...payload.items, ...current.filter((item) => !payload.items.some((incoming) => incoming.id === item.id))]));
+      setFeedback({ intent: payload.failed ? "info" : "success", message: `${payload.imported} importados, ${payload.alreadyPresent} duplicados, ${payload.failed} ignorados.` });
+    }).then((stop) => { unlisten = stop; });
+    return () => unlisten?.();
+  }, []);
 
   const importMedia = async () => {
     if (isImportingRef.current) return;

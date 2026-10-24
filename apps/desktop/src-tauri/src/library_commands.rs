@@ -34,7 +34,7 @@ pub enum PublicImportResult {
     Cancelled,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum PublicClipboardImportResult {
     NoFiles,
@@ -98,7 +98,7 @@ pub async fn import_clipboard_files(
     tauri::async_runtime::spawn_blocking(move || match crate::clipboard::clipboard_file_paths()? {
         crate::clipboard::ClipboardFilePaths::NoFiles => Ok(PublicClipboardImportResult::NoFiles),
         crate::clipboard::ClipboardFilePaths::Paths(paths) => {
-            Ok(public_clipboard_import_result(&library, &paths))
+            Ok(import_external_paths(&library, &paths))
         }
     })
     .await
@@ -171,10 +171,18 @@ fn public_import_result(result: ImportResult) -> PublicImportResult {
     }
 }
 
-fn public_clipboard_import_result(
+pub(crate) fn import_external_paths(
     library: &Library,
     paths: &[PathBuf],
 ) -> PublicClipboardImportResult {
+    if paths.len() > 20 {
+        return PublicClipboardImportResult::Completed {
+            imported: 0,
+            already_present: 0,
+            failed: paths.len() as u32,
+            items: Vec::new(),
+        };
+    }
     let mut imported = 0;
     let mut already_present = 0;
     let mut failed = 0;
