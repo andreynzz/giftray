@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { Badge, Button, Dialog, DialogActions, DialogBody, DialogContent, DialogSurface, DialogTitle, Input, MessageBar, MessageBarBody, Spinner, Text, makeStyles, shorthands, tokens } from "@fluentui/react-components";
 import { Add20Regular, ArrowClockwise20Regular, Copy20Regular, Delete20Regular, Dismiss20Regular, Document20Regular } from "@fluentui/react-icons";
-import { copyLibraryItem, deleteLibraryItem, importRemoteMedia, libraryPreviewUrl, libraryThumbnailUrl, listLibraryItems, renameLibraryItem, selectAndImportMedia, type ImportResult, type LibraryItem } from "../../platform/tauri/library";
+import { copyLibraryItem, deleteLibraryItem, importClipboardFiles, importRemoteMedia, libraryPreviewUrl, libraryThumbnailUrl, listLibraryItems, renameLibraryItem, selectAndImportMedia, type ClipboardImportResult, type ImportResult, type LibraryItem } from "../../platform/tauri/library";
 import { copyFailureMessage, deleteFailureMessage, importFailureMessage, renameFailureMessage } from "./lib/library-feedback";
 import { canCopyLibraryItem, canPreviewLibraryItem, canStartRemoteImport, filterLibraryItems, formatByteSize, libraryItemLabel, sortLibraryItems } from "./lib/library-presentation";
 
@@ -160,6 +160,45 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
     }
   };
 
+  const importClipboard = useCallback(async (quietNoFiles = false) => {
+    if (isImportingRef.current) return;
+    isImportingRef.current = true;
+    setImporting(true);
+    setFeedback(null);
+    try {
+      const result: ClipboardImportResult = await importClipboardFiles();
+      if (result.status === "noFiles") {
+        if (!quietNoFiles) setFeedback({ intent: "info", message: "Não há arquivos para colar na área de transferência." });
+        return;
+      }
+      setItems((current) => sortLibraryItems([...result.items, ...current.filter((item) => !result.items.some((resultItem) => resultItem.id === item.id))]));
+      setState("ready");
+      const parts = [
+        result.imported && `${result.imported} ${result.imported === 1 ? "arquivo importado" : "arquivos importados"}`,
+        result.alreadyPresent && `${result.alreadyPresent} ${result.alreadyPresent === 1 ? "arquivo já estava" : "arquivos já estavam"} na biblioteca`,
+        result.failed && `${result.failed} ${result.failed === 1 ? "arquivo ignorado" : "arquivos ignorados"}`,
+      ].filter(Boolean);
+      setFeedback({ intent: result.failed ? "info" : "success", message: `${parts.join(", ") || "Nenhum arquivo importado"}.` });
+    } catch (error: unknown) {
+      setFeedback({ intent: "error", message: importFailureMessage(error) });
+    } finally {
+      isImportingRef.current = false;
+      setImporting(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "v" || isImportingRef.current) return;
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("input, textarea, [contenteditable='true'], [role='textbox']")) return;
+      event.preventDefault();
+      void importClipboard(true);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [importClipboard]);
+
   const copyItem = async (item: LibraryItem) => {
     if (!canCopyLibraryItem(item, copyingIdRef.current)) return;
     copyingIdRef.current = item.id;
@@ -286,6 +325,9 @@ export function MediaLibrary({ importButtonRef }: MediaLibraryProps) {
       </div>
       <Button ref={buttonRef} appearance="primary" icon={<Add20Regular />} disabled={importing} onClick={() => void importMedia()}>
         Importar arquivo
+      </Button>
+      <Button appearance="secondary" disabled={importing} onClick={() => void importClipboard()}>
+        Colar arquivos
       </Button>
     </div>
     <form className={styles.remoteImport} onSubmit={(event) => { event.preventDefault(); void importRemote(); }}>

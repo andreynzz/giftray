@@ -82,7 +82,8 @@ pub fn run() {
             library_commands::list_library_items,
             library_commands::rename_library_item,
             library_commands::delete_library_item,
-            library_commands::copy_library_item
+            library_commands::copy_library_item,
+            library_commands::import_clipboard_files
         ])
         .run(tauri::generate_context!())
         .expect("error while running GIFTray");

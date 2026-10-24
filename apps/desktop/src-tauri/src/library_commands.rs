@@ -4,7 +4,7 @@
 
 //! Narrow Tauri boundary for the persistent library.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tauri::{AppHandle, State};
@@ -32,6 +32,18 @@ pub enum PublicImportResult {
     Imported { item: PublicLibraryItem },
     AlreadyPresent { item: PublicLibraryItem },
     Cancelled,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum PublicClipboardImportResult {
+    NoFiles,
+    Completed {
+        imported: u32,
+        already_present: u32,
+        failed: u32,
+        items: Vec<PublicLibraryItem>,
+    },
 }
 
 /// Opens the native picker. No path crosses the WebView IPC boundary.
@@ -75,6 +87,22 @@ pub async fn import_remote_media(
         .map_err(|_| "Não foi possível concluir a importação da URL.")?
         .map(public_import_result)
         .map_err(sanitized_error)
+}
+
+/// Reads CF_HDROP directly from the native clipboard. No path crosses IPC.
+#[tauri::command]
+pub async fn import_clipboard_files(
+    library: State<'_, LibraryRuntime>,
+) -> Result<PublicClipboardImportResult, String> {
+    let library = library.library()?;
+    tauri::async_runtime::spawn_blocking(move || match crate::clipboard::clipboard_file_paths()? {
+        crate::clipboard::ClipboardFilePaths::NoFiles => Ok(PublicClipboardImportResult::NoFiles),
+        crate::clipboard::ClipboardFilePaths::Paths(paths) => {
+            Ok(public_clipboard_import_result(&library, &paths))
+        }
+    })
+    .await
+    .map_err(|_| "Não foi possível concluir a importação da área de transferência.")?
 }
 
 #[tauri::command]
@@ -140,6 +168,35 @@ fn public_import_result(result: ImportResult) -> PublicImportResult {
         ImportResult::AlreadyPresent { item } => {
             PublicImportResult::AlreadyPresent { item: item.into() }
         }
+    }
+}
+
+fn public_clipboard_import_result(
+    library: &Library,
+    paths: &[PathBuf],
+) -> PublicClipboardImportResult {
+    let mut imported = 0;
+    let mut already_present = 0;
+    let mut failed = 0;
+    let mut items = Vec::new();
+    for path in paths {
+        match library.import_external_file(Path::new(path)) {
+            Ok(ImportResult::Imported { item }) => {
+                imported += 1;
+                items.push(item.into());
+            }
+            Ok(ImportResult::AlreadyPresent { item }) => {
+                already_present += 1;
+                items.push(item.into());
+            }
+            Err(_) => failed += 1,
+        }
+    }
+    PublicClipboardImportResult::Completed {
+        imported,
+        already_present,
+        failed,
+        items,
     }
 }
 

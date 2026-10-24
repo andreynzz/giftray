@@ -18,6 +18,68 @@ use tauri::{AppHandle, Manager};
 
 use crate::library::LibraryCopySource;
 
+pub(crate) enum ClipboardFilePaths {
+    NoFiles,
+    Paths(Vec<PathBuf>),
+}
+
+#[cfg(windows)]
+pub(crate) fn clipboard_file_paths() -> Result<ClipboardFilePaths, String> {
+    use windows_sys::Win32::{
+        System::{
+            DataExchange::{
+                CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
+            },
+            Ole::CF_HDROP,
+        },
+        UI::Shell::DragQueryFileW,
+    };
+
+    if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
+        return Err("A área de transferência está ocupada por outro aplicativo.".into());
+    }
+    let result = (|| {
+        if unsafe { IsClipboardFormatAvailable(CF_HDROP as u32) } == 0 {
+            return Ok(ClipboardFilePaths::NoFiles);
+        }
+        let handle = unsafe { GetClipboardData(CF_HDROP as u32) };
+        if handle.is_null() {
+            return Err("Não foi possível ler os arquivos da área de transferência.".into());
+        }
+        let count = unsafe { DragQueryFileW(handle, u32::MAX, std::ptr::null_mut(), 0) };
+        if count == 0 {
+            return Ok(ClipboardFilePaths::NoFiles);
+        }
+        if count > 20 {
+            return Err("A área de transferência contém mais de 20 arquivos.".into());
+        }
+        let mut paths = Vec::with_capacity(count as usize);
+        for index in 0..count {
+            let length = unsafe { DragQueryFileW(handle, index, std::ptr::null_mut(), 0) };
+            if length == 0 || length > 32_767 {
+                return Err("Não foi possível ler os arquivos da área de transferência.".into());
+            }
+            let mut buffer = vec![0u16; length as usize + 1];
+            let written =
+                unsafe { DragQueryFileW(handle, index, buffer.as_mut_ptr(), buffer.len() as u32) };
+            if written == 0 || written as usize >= buffer.len() {
+                return Err("Não foi possível ler os arquivos da área de transferência.".into());
+            }
+            let path = String::from_utf16(&buffer[..written as usize])
+                .map_err(|_| "Não foi possível ler os arquivos da área de transferência.")?;
+            paths.push(PathBuf::from(path));
+        }
+        Ok(ClipboardFilePaths::Paths(paths))
+    })();
+    unsafe { CloseClipboard() };
+    result
+}
+
+#[cfg(not(windows))]
+pub(crate) fn clipboard_file_paths() -> Result<ClipboardFilePaths, String> {
+    Ok(ClipboardFilePaths::NoFiles)
+}
+
 const MAX_MEDIA_BYTES: usize = 25 * 1024 * 1024;
 const CACHE_MAX_BYTES: u64 = 100 * 1024 * 1024;
 const CACHE_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);

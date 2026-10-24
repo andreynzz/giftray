@@ -25,6 +25,10 @@ export type ImportResult =
   | { status: "alreadyPresent"; item: LibraryItem }
   | { status: "cancelled" };
 
+export type ClipboardImportResult =
+  | { status: "noFiles" }
+  | { status: "completed"; imported: number; alreadyPresent: number; failed: number; items: LibraryItem[] };
+
 export function selectAndImportMedia(): Promise<ImportResult> {
   return invoke("select_and_import_media");
 }
@@ -32,6 +36,11 @@ export function selectAndImportMedia(): Promise<ImportResult> {
 /** Sends the untrusted URL only to the native P0-protected downloader. */
 export function importRemoteMedia(url: string): Promise<Exclude<ImportResult, { status: "cancelled" }>> {
   return invoke("import_remote_media", { url });
+}
+
+/** Reads native CF_HDROP; no path is sent by the WebView. */
+export function importClipboardFiles(): Promise<ClipboardImportResult> {
+  return invoke("import_clipboard_files");
 }
 
 export function listLibraryItems(): Promise<LibraryItem[]> {
