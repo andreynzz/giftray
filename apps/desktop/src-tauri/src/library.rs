@@ -11,15 +11,17 @@
 #![allow(dead_code)] // P1.1.1 establishes the internal API before the native picker exists.
 
 mod external_source;
+mod locking;
 mod model;
 mod paths;
 mod policy;
+mod recovery;
 mod repository;
 mod storage;
 
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{self, Cursor, Read},
+    fs::{self, File},
+    io::{Cursor, Read},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -29,6 +31,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use external_source::open_external_media_file;
+use locking::{open_library_lock, OperationLock};
 pub use model::{
     Availability, ImportResult, LibraryError, LibraryItem, MediaFormat, PublicLibraryItem,
     SourceKind,
@@ -36,7 +39,7 @@ pub use model::{
 use paths::{controlled_media_path, is_reparse_point, safe_storage_key};
 use policy::{normalize_display_name, sanitized_name};
 use repository::{insert_item, migrate, query_item};
-use storage::{copy_to_part, format_from_file, is_internal_part, publish_part};
+use storage::{copy_to_part, format_from_file, publish_part};
 
 pub const MAX_MEDIA_BYTES: u64 = 25 * 1024 * 1024;
 const LIBRARY_DIRECTORY: &str = "library";
@@ -345,70 +348,17 @@ impl Library {
     }
 
     fn operation_lock(&self) -> Result<OperationLock<'_>, LibraryError> {
-        let in_process = self
-            .operation_mutex
-            .lock()
-            .map_err(|_| LibraryError::InUse)?;
-        Ok(OperationLock {
-            _in_process: in_process,
-        })
+        OperationLock::acquire(&self.operation_mutex)
     }
 
     fn recover(&self, connection: &Connection) -> Result<(), LibraryError> {
-        // Recovery is deliberately conservative: only our exact unpublished name is removed.
-        for entry in fs::read_dir(self.media_directory()).map_err(|_| LibraryError::Storage)? {
-            let entry = entry.map_err(|_| LibraryError::Storage)?;
-            if entry
-                .file_type()
-                .map_err(|_| LibraryError::Storage)?
-                .is_file()
-                && is_internal_part(&entry.path())
-            {
-                fs::remove_file(entry.path()).map_err(|_| LibraryError::Storage)?;
-            }
-        }
-        let mut missing_ids = Vec::new();
-        for (id, storage_key) in repository::item_storage_keys(connection)? {
-            if !safe_storage_key(&id, &storage_key)
-                || controlled_media_path(&self.media_directory(), &storage_key).is_err()
-            {
-                missing_ids.push(id);
-            }
-        }
-        repository::mark_missing(connection, &missing_ids)
+        recovery::recover(&self.media_directory(), connection)
     }
-}
-
-struct OperationLock<'a> {
-    _in_process: std::sync::MutexGuard<'a, ()>,
-}
-
-#[cfg(windows)]
-fn open_library_lock(path: &Path) -> io::Result<File> {
-    use std::os::windows::fs::OpenOptionsExt;
-
-    // share_mode(0) maps to a CreateFile handle that no other process can
-    // open. Windows closes it automatically after a crash or normal exit.
-    OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .share_mode(0)
-        .open(path)
-}
-
-#[cfg(not(windows))]
-fn open_library_lock(path: &Path) -> io::Result<File> {
-    OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .open(path)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
+    use std::io::{self, Write};
 
     use super::*;
 
