@@ -10,6 +10,9 @@
 
 #![allow(dead_code)] // P1.1.1 establishes the internal API before the native picker exists.
 
+mod model;
+mod policy;
+
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Cursor, Read, Write},
@@ -19,157 +22,22 @@ use std::{
 };
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+pub use model::{
+    Availability, ImportResult, LibraryError, LibraryItem, MediaFormat, PublicLibraryItem,
+    SourceKind,
+};
+use policy::{
+    extended_dos_drive_root, format_from_signature, normalize_display_name, sanitized_name,
+};
 
 pub const MAX_MEDIA_BYTES: u64 = 25 * 1024 * 1024;
 const LIBRARY_DIRECTORY: &str = "library";
 const MEDIA_DIRECTORY: &str = "media";
 const DATABASE_FILE: &str = "library.sqlite3";
 const LOCK_FILE: &str = "library.lock";
-const MAX_DISPLAY_NAME_CHARS: usize = 120;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MediaFormat {
-    Gif,
-    Webp,
-    Png,
-}
-
-impl MediaFormat {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Gif => "gif",
-            Self::Webp => "webp",
-            Self::Png => "png",
-        }
-    }
-
-    fn from_str(value: &str) -> Result<Self, LibraryError> {
-        match value {
-            "gif" => Ok(Self::Gif),
-            "webp" => Ok(Self::Webp),
-            "png" => Ok(Self::Png),
-            _ => Err(LibraryError::Database),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LibraryItem {
-    pub id: String,
-    pub format: MediaFormat,
-    pub storage_key: String,
-    pub byte_size: u64,
-    pub content_sha256: String,
-    pub source_kind: SourceKind,
-    pub original_name: Option<String>,
-    pub display_name: Option<String>,
-    pub imported_at: i64,
-    pub availability: Availability,
-}
-
-/// The IPC-safe projection of a persistent item. It intentionally excludes
-/// storage keys, hashes and every filesystem path.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PublicLibraryItem {
-    pub id: String,
-    pub format: String,
-    pub byte_size: u64,
-    pub source_kind: String,
-    pub original_name: Option<String>,
-    pub display_name: Option<String>,
-    pub imported_at: i64,
-    pub availability: String,
-}
-
-impl From<LibraryItem> for PublicLibraryItem {
-    fn from(item: LibraryItem) -> Self {
-        Self {
-            id: item.id,
-            format: item.format.as_str().into(),
-            byte_size: item.byte_size,
-            source_kind: item.source_kind.as_str().into(),
-            original_name: item.original_name,
-            display_name: item.display_name,
-            imported_at: item.imported_at,
-            availability: item.availability.as_str().into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceKind {
-    LocalFile,
-    RemoteUrl,
-    ExternalRequest,
-}
-
-impl SourceKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::LocalFile => "local_file",
-            Self::RemoteUrl => "remote_url",
-            Self::ExternalRequest => "external_request",
-        }
-    }
-
-    fn from_str(value: &str) -> Result<Self, LibraryError> {
-        match value {
-            "local_file" => Ok(Self::LocalFile),
-            "remote_url" => Ok(Self::RemoteUrl),
-            "external_request" => Ok(Self::ExternalRequest),
-            _ => Err(LibraryError::Database),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Availability {
-    Available,
-    Missing,
-}
-
-impl Availability {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Available => "available",
-            Self::Missing => "missing",
-        }
-    }
-
-    fn from_str(value: &str) -> Result<Self, LibraryError> {
-        match value {
-            "available" => Ok(Self::Available),
-            "missing" => Ok(Self::Missing),
-            _ => Err(LibraryError::Database),
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum ImportResult {
-    Imported { item: LibraryItem },
-    AlreadyPresent { item: LibraryItem },
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum LibraryError {
-    InUse,
-    InvalidId,
-    NotFound,
-    Missing,
-    EmptyFile,
-    TooLarge,
-    InvalidMedia,
-    InvalidDisplayName,
-    SourceUnavailable,
-    Storage,
-    Database,
-}
-
 /// Native-only resolved source for a clipboard-cache copy.
 #[derive(Debug)]
 pub(crate) struct LibraryCopySource {
@@ -669,18 +537,6 @@ fn publish_part(part: &Path, final_path: &Path) -> Result<(), LibraryError> {
     fs::rename(part, final_path).map_err(|_| LibraryError::Storage)
 }
 
-fn format_from_signature(bytes: &[u8]) -> Option<MediaFormat> {
-    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        Some(MediaFormat::Gif)
-    } else if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some(MediaFormat::Png)
-    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        Some(MediaFormat::Webp)
-    } else {
-        None
-    }
-}
-
 fn is_internal_part(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
         return false;
@@ -790,19 +646,6 @@ fn open_external_media_file(source: &Path) -> Result<File, LibraryError> {
     Ok(file)
 }
 
-/// Extracts `C:\\` from a final handle path such as `\\\\?\\C:\\media.gif`.
-/// UNC, volume GUID and device namespaces have no approved local-drive root.
-fn extended_dos_drive_root(path: &str) -> Result<String, LibraryError> {
-    let Some(rest) = path.strip_prefix(r"\\?\") else {
-        return Err(LibraryError::SourceUnavailable);
-    };
-    let bytes = rest.as_bytes();
-    if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' || bytes[2] != b'\\' {
-        return Err(LibraryError::SourceUnavailable);
-    }
-    Ok(format!("{}:\\", bytes[0] as char))
-}
-
 #[cfg(not(windows))]
 fn open_external_media_file(_: &Path) -> Result<File, LibraryError> {
     Err(LibraryError::SourceUnavailable)
@@ -818,28 +661,6 @@ fn is_reparse_point(metadata: &fs::Metadata) -> bool {
 #[cfg(not(windows))]
 fn is_reparse_point(_metadata: &fs::Metadata) -> bool {
     false
-}
-
-fn sanitized_name(source: &Path) -> Option<String> {
-    let name = source.file_name()?.to_str()?.trim();
-    if name.is_empty() || name.chars().any(char::is_control) {
-        None
-    } else {
-        Some(name.chars().take(255).collect())
-    }
-}
-
-fn normalize_display_name(value: &str) -> Result<Option<String>, LibraryError> {
-    let normalized = value.trim();
-    if normalized.is_empty() {
-        return Ok(None);
-    }
-    if normalized.chars().any(char::is_control)
-        || normalized.chars().count() > MAX_DISPLAY_NAME_CHARS
-    {
-        return Err(LibraryError::InvalidDisplayName);
-    }
-    Ok(Some(normalized.into()))
 }
 
 fn unix_timestamp() -> Result<i64, LibraryError> {
@@ -889,30 +710,6 @@ fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<LibraryItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_only_extended_dos_drive_roots() {
-        assert_eq!(
-            extended_dos_drive_root(r"\\?\C:\Users\José\media.gif").unwrap(),
-            "C:\\"
-        );
-        assert_eq!(
-            extended_dos_drive_root(r"\\?\d:\media.png").unwrap(),
-            "d:\\"
-        );
-        for invalid in [
-            r"\\server\share\a.gif",
-            r"\\?\Volume{guid}\a.gif",
-            r"\\.\C:\a.gif",
-            r"C:\a.gif",
-            r"\\?\C:",
-        ] {
-            assert_eq!(
-                extended_dos_drive_root(invalid).unwrap_err(),
-                LibraryError::SourceUnavailable
-            );
-        }
-    }
 
     fn temp_root(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("giftray-library-{name}-{}", Uuid::new_v4()));
@@ -1086,7 +883,7 @@ mod tests {
         );
         assert_eq!(
             library
-                .rename_item(&item.id, "x".repeat(MAX_DISPLAY_NAME_CHARS + 1))
+                .rename_item(&item.id, "x".repeat(policy::MAX_DISPLAY_NAME_CHARS + 1),)
                 .unwrap_err(),
             LibraryError::InvalidDisplayName
         );
