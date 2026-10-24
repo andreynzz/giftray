@@ -45,6 +45,10 @@ Para verificá-lo sem abrir a janela, execute `pnpm check`, `pnpm test` e `pnpm 
 
 Para fluxo de contribuição, consulte [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Gerar instalador Windows
+
+Em Windows x64, instale Node.js, pnpm, Rust com toolchain MSVC e Microsoft C++ Build Tools. O WebView2 Runtime é necessário no ambiente de execução. Na raiz do repositório, execute `pnpm --filter @giftray/desktop tauri build --bundles nsis`. O instalador NSIS por usuário é gerado em `apps/desktop/src-tauri/target/release/bundle/nsis/`. Ele ainda não possui assinatura digital, portanto o Windows SmartScreen pode mostrar um aviso. A distribuição é somente para testes internos, sem beta pública.
+
 ## Licença
 
 O código deste repositório é disponibilizado sob a [Mozilla Public License 2.0](LICENSE) (MPL-2.0). A licença do código não concede direitos de uso da marca e da identidade visual GIFTray além dos estritamente previstos na própria licença. Imagens, GIFs ou outros conteúdos de terceiros mantêm seus respectivos direitos.
