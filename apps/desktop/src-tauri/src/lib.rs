@@ -8,6 +8,7 @@ mod library_commands;
 mod library_media;
 mod remote_media;
 mod shortcuts;
+mod tray;
 mod window;
 
 use tauri::{Emitter, Manager, WindowEvent};
@@ -49,6 +50,12 @@ pub fn run() {
             initial_shortcut,
         )))
         .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
             if let WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
                 let runtime = window.state::<library_commands::LibraryRuntime>();
                 let Ok(library) = runtime.library() else {
@@ -73,16 +80,17 @@ pub fn run() {
                     Err(_) => {
                         return Err(Box::<dyn std::error::Error>::from(
                             "library initialization failed",
-                        ))
+                        ));
                     }
                 },
                 Err(_) => {
                     return Err(Box::<dyn std::error::Error>::from(
                         "library data directory unavailable",
-                    ))
+                    ));
                 }
             };
             app.manage(runtime);
+            tray::setup(app)?;
             app.global_shortcut().register(initial_shortcut)?;
             Ok(())
         })
