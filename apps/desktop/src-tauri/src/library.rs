@@ -10,7 +10,9 @@
 
 #![allow(dead_code)] // P1.1.1 establishes the internal API before the native picker exists.
 
+mod external_source;
 mod model;
+mod paths;
 mod policy;
 mod repository;
 mod storage;
@@ -18,7 +20,7 @@ mod storage;
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Cursor, Read},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -26,11 +28,13 @@ use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use external_source::open_external_media_file;
 pub use model::{
     Availability, ImportResult, LibraryError, LibraryItem, MediaFormat, PublicLibraryItem,
     SourceKind,
 };
-use policy::{extended_dos_drive_root, normalize_display_name, sanitized_name};
+use paths::{controlled_media_path, is_reparse_point, safe_storage_key};
+use policy::{normalize_display_name, sanitized_name};
 use repository::{insert_item, migrate, query_item};
 use storage::{copy_to_part, format_from_file, is_internal_part, publish_part};
 
@@ -400,119 +404,6 @@ fn open_library_lock(path: &Path) -> io::Result<File> {
         .read(true)
         .write(true)
         .open(path)
-}
-
-fn safe_storage_key(id: &str, key: &str) -> bool {
-    Path::new(key).components().count() == 1
-        && Path::new(key)
-            .components()
-            .all(|component| matches!(component, Component::Normal(_)))
-        && ["gif", "webp", "png"]
-            .iter()
-            .any(|extension| key == format!("{id}.{extension}"))
-}
-
-/// Resolves only a normal file directly below the native-owned media directory.
-/// Links and Windows reparse points are never a valid persistent media item.
-fn controlled_media_path(
-    media_directory: &Path,
-    storage_key: &str,
-) -> Result<PathBuf, LibraryError> {
-    let directory_metadata =
-        fs::symlink_metadata(media_directory).map_err(|_| LibraryError::Missing)?;
-    if !directory_metadata.file_type().is_dir() || is_reparse_point(&directory_metadata) {
-        return Err(LibraryError::Storage);
-    }
-
-    let candidate = media_directory.join(storage_key);
-    let metadata = fs::symlink_metadata(&candidate).map_err(|_| LibraryError::Missing)?;
-    if !metadata.file_type().is_file() || is_reparse_point(&metadata) {
-        return Err(LibraryError::Missing);
-    }
-
-    let directory = fs::canonicalize(media_directory).map_err(|_| LibraryError::Missing)?;
-    let path = fs::canonicalize(&candidate).map_err(|_| LibraryError::Missing)?;
-    if !path.starts_with(&directory) {
-        return Err(LibraryError::Missing);
-    }
-    Ok(path)
-}
-
-#[cfg(windows)]
-fn open_external_media_file(source: &Path) -> Result<File, LibraryError> {
-    use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
-    use windows_sys::Win32::{
-        Storage::FileSystem::{
-            GetDriveTypeW, GetFinalPathNameByHandleW, FILE_FLAG_OPEN_REPARSE_POINT,
-        },
-        System::WindowsProgramming::DRIVE_FIXED,
-    };
-    if !source.is_absolute()
-        || source.as_os_str().is_empty()
-        || source.to_string_lossy().starts_with("\\\\")
-        || source
-            .components()
-            .any(|c| matches!(c, Component::ParentDir))
-    {
-        return Err(LibraryError::SourceUnavailable);
-    }
-    for component in source.ancestors().skip(1) {
-        let metadata =
-            fs::symlink_metadata(component).map_err(|_| LibraryError::SourceUnavailable)?;
-        if is_reparse_point(&metadata) {
-            return Err(LibraryError::SourceUnavailable);
-        }
-    }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(source)
-        .map_err(|_| LibraryError::SourceUnavailable)?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| LibraryError::SourceUnavailable)?;
-    if !metadata.file_type().is_file()
-        || is_reparse_point(&metadata)
-        || metadata.len() > MAX_MEDIA_BYTES
-    {
-        return Err(LibraryError::SourceUnavailable);
-    }
-    let handle = file.as_raw_handle().cast();
-    let length = unsafe { GetFinalPathNameByHandleW(handle, std::ptr::null_mut(), 0, 0) };
-    if length == 0 || length > 32767 {
-        return Err(LibraryError::SourceUnavailable);
-    }
-    let mut wide = vec![0u16; length as usize + 1];
-    let final_length =
-        unsafe { GetFinalPathNameByHandleW(handle, wide.as_mut_ptr(), wide.len() as u32, 0) };
-    if final_length == 0 || final_length as usize >= wide.len() {
-        return Err(LibraryError::SourceUnavailable);
-    }
-    let final_path = String::from_utf16(&wide[..final_length as usize])
-        .map_err(|_| LibraryError::SourceUnavailable)?;
-    let root = extended_dos_drive_root(&final_path)?;
-    let mut root_wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
-    if unsafe { GetDriveTypeW(root_wide.as_mut_ptr()) } != DRIVE_FIXED {
-        return Err(LibraryError::SourceUnavailable);
-    }
-    Ok(file)
-}
-
-#[cfg(not(windows))]
-fn open_external_media_file(_: &Path) -> Result<File, LibraryError> {
-    Err(LibraryError::SourceUnavailable)
-}
-
-#[cfg(windows)]
-fn is_reparse_point(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-
-    metadata.file_attributes() & 0x0400 != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse_point(_metadata: &fs::Metadata) -> bool {
-    false
 }
 
 #[cfg(test)]
