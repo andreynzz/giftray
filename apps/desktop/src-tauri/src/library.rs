@@ -13,10 +13,11 @@
 mod model;
 mod policy;
 mod repository;
+mod storage;
 
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Cursor, Read, Write},
+    io::{self, Cursor, Read},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -29,10 +30,9 @@ pub use model::{
     Availability, ImportResult, LibraryError, LibraryItem, MediaFormat, PublicLibraryItem,
     SourceKind,
 };
-use policy::{
-    extended_dos_drive_root, format_from_signature, normalize_display_name, sanitized_name,
-};
+use policy::{extended_dos_drive_root, normalize_display_name, sanitized_name};
 use repository::{insert_item, migrate, query_item};
+use storage::{copy_to_part, format_from_file, is_internal_part, publish_part};
 
 pub const MAX_MEDIA_BYTES: u64 = 25 * 1024 * 1024;
 const LIBRARY_DIRECTORY: &str = "library";
@@ -402,68 +402,6 @@ fn open_library_lock(path: &Path) -> io::Result<File> {
         .open(path)
 }
 
-fn copy_to_part(
-    part: &Path,
-    source: &mut dyn Read,
-) -> Result<(MediaFormat, u64, String), LibraryError> {
-    let mut output = File::create(part).map_err(|_| LibraryError::Storage)?;
-    let mut buffer = [0u8; 8192];
-    let mut prefix = Vec::with_capacity(12);
-    let mut total = 0u64;
-    let mut digest = Sha256::new();
-    loop {
-        let count = source
-            .read(&mut buffer)
-            .map_err(|_| LibraryError::SourceUnavailable)?;
-        if count == 0 {
-            break;
-        }
-        total = total
-            .checked_add(count as u64)
-            .ok_or(LibraryError::TooLarge)?;
-        if total > MAX_MEDIA_BYTES {
-            return Err(LibraryError::TooLarge);
-        }
-        if prefix.len() < 12 {
-            prefix.extend_from_slice(&buffer[..count.min(12 - prefix.len())]);
-        }
-        output
-            .write_all(&buffer[..count])
-            .map_err(|_| LibraryError::Storage)?;
-        digest.update(&buffer[..count]);
-    }
-    output.sync_all().map_err(|_| LibraryError::Storage)?;
-    if total == 0 {
-        return Err(LibraryError::EmptyFile);
-    }
-    let format = format_from_signature(&prefix).ok_or(LibraryError::InvalidMedia)?;
-    Ok((format, total, format!("{:x}", digest.finalize())))
-}
-
-fn format_from_file(path: &Path) -> Result<MediaFormat, LibraryError> {
-    let mut file = File::open(path).map_err(|_| LibraryError::Missing)?;
-    let mut prefix = [0u8; 12];
-    let count = file.read(&mut prefix).map_err(|_| LibraryError::Missing)?;
-    format_from_signature(&prefix[..count]).ok_or(LibraryError::InvalidMedia)
-}
-
-fn publish_part(part: &Path, final_path: &Path) -> Result<(), LibraryError> {
-    fs::rename(part, final_path).map_err(|_| LibraryError::Storage)
-}
-
-fn is_internal_part(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
-        return false;
-    };
-    let Some(stem) = name
-        .strip_prefix('.')
-        .and_then(|value| value.strip_suffix(".pending.part"))
-    else {
-        return false;
-    };
-    Uuid::parse_str(stem).is_ok()
-}
-
 fn safe_storage_key(id: &str, key: &str) -> bool {
     Path::new(key).components().count() == 1
         && Path::new(key)
@@ -579,6 +517,8 @@ fn is_reparse_point(_metadata: &fs::Metadata) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
 
     fn temp_root(name: &str) -> PathBuf {
