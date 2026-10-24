@@ -3,20 +3,8 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 import { useEffect, useRef, useState } from "react";
-import {
-  Accordion,
-  AccordionHeader,
-  AccordionItem,
-  AccordionPanel,
-  Button,
-  FluentProvider,
-  makeStyles,
-  tokens,
-} from "@fluentui/react-components";
+import { Button, FluentProvider, makeStyles, tokens } from "@fluentui/react-components";
 import { Dismiss20Regular } from "@fluentui/react-icons";
-import { MediaImport, useMediaImport } from "../features/media-import";
-import { InputDiagnostics } from "../features/input-diagnostics/InputDiagnostics";
-import { ClipboardOutput } from "../features/clipboard-output";
 import { MediaLibrary } from "../features/media-library";
 import {
   readPreferences,
@@ -47,7 +35,6 @@ const useStyles = makeStyles({
     marginBottom: "16px",
   },
   headerActions: { display: "flex", gap: "4px" },
-  tools: { marginTop: "20px" },
 });
 
 export function App() {
@@ -58,7 +45,6 @@ export function App() {
   const importButtonRef = useRef<HTMLButtonElement>(null);
   const initialShortcutRef = useRef(preferences.shortcut);
   const systemDark = useSystemDarkMode();
-  const mediaImport = useMediaImport();
   useSearchWindowFocus(importButtonRef);
 
   useEffect(() => {
@@ -100,21 +86,6 @@ export function App() {
           </div>
         </header>
         <MediaLibrary importButtonRef={importButtonRef} />
-        <Accordion collapsible className={styles.tools}>
-          <AccordionItem value="p0-tools">
-            <AccordionHeader>Ferramentas de teste da P0</AccordionHeader>
-            <AccordionPanel>
-              <InputDiagnostics onInput={mediaImport.receiveInput} />
-              <MediaImport
-                preview={mediaImport.preview}
-                onClear={mediaImport.clear}
-                onLoad={mediaImport.markLoaded}
-                onLoadError={mediaImport.markFailed}
-              />
-              <ClipboardOutput preview={mediaImport.preview} />
-            </AccordionPanel>
-          </AccordionItem>
-        </Accordion>
       </main>
     </FluentProvider>
   );
